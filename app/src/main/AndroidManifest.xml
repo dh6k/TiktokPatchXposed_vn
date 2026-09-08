@@ -11,7 +11,7 @@
             android:value="true" />
         <meta-data
             android:name="xposeddescription"
-            android:value="TikTok patcher with Germany region, auto streak and clean feed" />
+            android:value="TikTok patcher with Vietnam region and clean feed" />
         <meta-data
             android:name="xposedminversion"
             android:value="72" />

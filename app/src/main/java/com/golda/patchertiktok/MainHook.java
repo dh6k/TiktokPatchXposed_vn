@@ -44,28 +44,28 @@ public class MainHook implements IXposedHookLoadPackage {
             "labelInfo", "tabText", "text", "key"
     };
     private static final String[][] RECOMMENDATION_FEED_OVERRIDES = {
-            {"region", "RU"},
-            {"carrier_region", "RU"},
-            {"sys_region", "RU"},
-            {"current_region", "RU"},
-            {"residence", "RU"},
-            {"op_region", "RU"},
-            {"store_region", "RU"},
-            {"mcc_mnc", "25001"},
-            {"carrier_region_v2", "250"},
-            {"language", "ru"},
-            {"app_language", "ru"},
-            {"locale", "ru-RU"}
+            {"region", "VN"},
+            {"carrier_region", "VN"},
+            {"sys_region", "VN"},
+            {"current_region", "VN"},
+            {"residence", "VN"},
+            {"op_region", "VN"},
+            {"store_region", "VN"},
+            {"mcc_mnc", "45204"},
+            {"carrier_region_v2", "452"},
+            {"language", "vi"},
+            {"app_language", "vi"},
+            {"locale", "vi-VN"}
     };
-    private static final String COUNTRY_ISO = "DE";
-    private static final String COUNTRY_ISO_LOWER = "de";
-    private static final String MCC = "262";
-    private static final String MNC = "01";
+    private static final String COUNTRY_ISO = "VN";
+    private static final String COUNTRY_ISO_LOWER = "vn";
+    private static final String MCC = "452";
+    private static final String MNC = "04";
     private static final String OPERATOR = MCC + MNC;
-    private static final String OPERATOR_NAME = "Telekom.de";
-    private static final String CONTENT_LANGUAGE = "ru";
-    private static final Locale APP_LOCALE = new Locale("ru", "RU");
-    private static final String APP_LOCALE_TAG = "ru-RU";
+    private static final String OPERATOR_NAME = "Viettel";
+    private static final String CONTENT_LANGUAGE = "vi";
+    private static final Locale APP_LOCALE = new Locale("vi", "VN");
+    private static final String APP_LOCALE_TAG = "vi-VN";
 
     private static final String AWEME_CLASS =
             "com.ss.android.ugc.aweme.feed.model.Aweme";
@@ -82,11 +82,6 @@ public class MainHook implements IXposedHookLoadPackage {
             "LIZLLL"
     };
 
-    private static final String[] AUTO_STREAK_RECEIVER_CANDIDATES = {
-            "com.ss.android.ugc.aweme.keepalive.KeepAliveReceiver",
-            "com.ss.android.ugc.aweme.lifecycle.LifecycleActiveReceiver",
-            "com.ss.android.common.applog.HotsoonReceiver"
-    };
 
     @Override
     public void handleLoadPackage(final XC_LoadPackage.LoadPackageParam lpparam) {
@@ -101,12 +96,11 @@ public class MainHook implements IXposedHookLoadPackage {
             installStartupAdBlocker(lpparam.classLoader);
             installTopLiveButtonPatch(lpparam.classLoader);
         }
-        installGermanyRegionSpoof();
-        installRussianRecommendationLanguage(lpparam.classLoader);
+        installVietnamRegionSpoof();
+        installVietnameseRecommendationLanguage(lpparam.classLoader);
         installRecommendationFeedRegionOverride(lpparam.classLoader);
         if (isMainProcess) {
             installGoogleLoginFix(lpparam);
-            installAutoStreak(lpparam);
         }
     }
 
@@ -598,9 +592,8 @@ public class MainHook implements IXposedHookLoadPackage {
             Object item = items.get(index);
             Object aweme = unwrapAweme(item);
             boolean adOrLive = shouldRemoveFeedItem(item, aweme);
-            boolean german = isGermanLanguageItem(aweme);
             boolean suggestedAcquaintance = isSuggestedAcquaintance(aweme);
-            if (adOrLive || german || suggestedAcquaintance) {
+            if (adOrLive || suggestedAcquaintance) {
                 if (filtered == null) {
                     filtered = new ArrayList<>(Math.max(0, items.size() - 1));
                     for (int previous = 0; previous < index; previous++) {
@@ -622,21 +615,6 @@ public class MainHook implements IXposedHookLoadPackage {
         return isAdItem(item) || isAdItem(aweme) || isLiveItem(item) || isLiveItem(aweme);
     }
 
-    private boolean isGermanLanguageItem(Object aweme) {
-        if (aweme == null) return false;
-        return isGermanLanguageCode(callNoArg(aweme, "getDescLanguage"))
-                || isGermanLanguageCode(callNoArg(aweme, "getPhotoTitleLanguageCode"))
-                || isGermanLanguageCode(findFieldValue(aweme, "descLanguage"))
-                || isGermanLanguageCode(findFieldValue(aweme, "photoTitleLanguageCode"));
-    }
-
-    private boolean isGermanLanguageCode(Object value) {
-        if (!(value instanceof String)) return false;
-        String language = ((String) value).trim().toLowerCase(Locale.ROOT);
-        return "de".equals(language)
-                || language.startsWith("de-")
-                || language.startsWith("de_");
-    }
 
     private boolean isSuggestedAcquaintance(Object aweme) {
         if (aweme == null) return false;
@@ -791,7 +769,7 @@ public class MainHook implements IXposedHookLoadPackage {
         return null;
     }
 
-    private void installGermanyRegionSpoof() {
+    private void installVietnamRegionSpoof() {
         hookTelephony("getSimCountryIso", COUNTRY_ISO);
         hookTelephony("getNetworkCountryIso", COUNTRY_ISO);
         hookTelephony("getSimOperator", OPERATOR);
@@ -801,7 +779,7 @@ public class MainHook implements IXposedHookLoadPackage {
         hookSubscriptionInfo();
         hookSystemProperties();
         hookLocale();
-        XposedBridge.log(TAG + ": Germany SIM spoof with Russian language installed");
+        XposedBridge.log(TAG + ": Vietnam SIM spoof with Vietnamese language installed");
     }
 
     private void installRenderedAdSkip(ClassLoader classLoader) {
@@ -983,8 +961,8 @@ public class MainHook implements IXposedHookLoadPackage {
             hookMatchingMethods(cls, "getCountryIso", String.class, COUNTRY_ISO_LOWER);
             hookMatchingMethods(cls, "getMccString", String.class, MCC);
             hookMatchingMethods(cls, "getMncString", String.class, MNC);
-            hookMatchingMethods(cls, "getMcc", int.class, 262);
-            hookMatchingMethods(cls, "getMnc", int.class, 1);
+            hookMatchingMethods(cls, "getMcc", int.class, 452);
+            hookMatchingMethods(cls, "getMnc", int.class, 4);
             hookMatchingMethods(cls, "getCarrierName", CharSequence.class, OPERATOR_NAME);
             hookMatchingMethods(cls, "getDisplayName", CharSequence.class, OPERATOR_NAME);
             XposedBridge.log(TAG + ": SubscriptionInfo spoof installed");
@@ -1052,7 +1030,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 return OPERATOR_NAME;
             case "persist.sys.country":
             case "ro.product.locale.region":
-                return "DE";
+                return "VN";
             case "persist.sys.locale":
             case "ro.product.locale":
                 return APP_LOCALE_TAG;
@@ -1071,7 +1049,7 @@ public class MainHook implements IXposedHookLoadPackage {
         }
     }
 
-    private void installRussianRecommendationLanguage(ClassLoader classLoader) {
+    private void installVietnameseRecommendationLanguage(ClassLoader classLoader) {
         try {
             Class<?> service = XposedHelpers.findClassIfExists(
                     "com.ss.android.ugc.aweme.contentlanguage.ContentLanguageServiceImpl",
@@ -1107,7 +1085,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 XposedBridge.log(TAG + ": content-language services not found");
                 return;
             }
-            XposedBridge.log(TAG + ": Russian recommendation language installed");
+            XposedBridge.log(TAG + ": Vietnamese recommendation language installed");
         } catch (Throwable t) {
             XposedBridge.log(TAG + " [recommendation language] " + t);
         }
@@ -1284,101 +1262,6 @@ public class MainHook implements IXposedHookLoadPackage {
         query.put(actualKey, new ArrayList<>(Collections.singletonList(value)));
     }
 
-    private void installAutoStreak(final XC_LoadPackage.LoadPackageParam lpparam) {
-        final String receiverClassName = hookAutoStreakAlarmReceiver(lpparam);
-        AutoStreakManager.configure(lpparam.classLoader, receiverClassName);
-        try {
-            XposedHelpers.findAndHookMethod(
-                    android.app.Application.class,
-                    "attach",
-                    android.content.Context.class,
-                    new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            try {
-                                XposedBridge.log(TAG + ": auto streak attach callback");
-                                AutoStreakManager.initialize(
-                                        (android.content.Context) param.args[0],
-                                        lpparam.classLoader,
-                                        receiverClassName
-                                );
-                            } catch (Throwable t) {
-                                XposedBridge.log(TAG + " [auto streak attach callback] " + t);
-                            }
-                        }
-                    }
-            );
-
-            XposedBridge.hookAllMethods(
-                    android.app.Application.class,
-                    "onCreate",
-                    new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            try {
-                                XposedBridge.log(TAG + ": auto streak onCreate fallback");
-                                AutoStreakManager.initialize(
-                                        (android.app.Application) param.thisObject,
-                                        lpparam.classLoader,
-                                        receiverClassName
-                                );
-                            } catch (Throwable t) {
-                                XposedBridge.log(TAG + " [auto streak onCreate fallback] " + t);
-                            }
-                        }
-                    }
-            );
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + " [auto streak init] " + t);
-        }
-    }
-
-    private String hookAutoStreakAlarmReceiver(final XC_LoadPackage.LoadPackageParam lpparam) {
-        for (final String className : AUTO_STREAK_RECEIVER_CANDIDATES) {
-            try {
-                Class<?> receiverClass = XposedHelpers.findClassIfExists(
-                        className,
-                        lpparam.classLoader
-                );
-                if (receiverClass == null) continue;
-
-                XposedHelpers.findAndHookMethod(
-                        receiverClass,
-                        "onReceive",
-                        android.content.Context.class,
-                        android.content.Intent.class,
-                        new XC_MethodHook() {
-                            @Override
-                            protected void beforeHookedMethod(MethodHookParam param) {
-                                android.content.Intent intent =
-                                        (android.content.Intent) param.args[1];
-                                if (intent == null) {
-                                    return;
-                                }
-                                String action = intent.getAction();
-                                if (!AutoStreakManager.ACTION_AUTO_STREAK.equals(action)
-                                        && !AutoStreakManager.ACTION_AUTO_STREAK_BACKUP.equals(
-                                        action)) {
-                                    return;
-                                }
-
-                                param.setResult(null);
-                                AutoStreakManager.onAlarm(
-                                        (android.content.Context) param.args[0]
-                                );
-                            }
-                        }
-                );
-                XposedBridge.log(TAG + ": auto streak alarm receiver=" + className);
-                return className;
-            } catch (Throwable t) {
-                XposedBridge.log(TAG + " [auto streak receiver " + className + "] " + t);
-            }
-        }
-
-        XposedBridge.log(TAG + ": no alarm receiver found; launch/heartbeat mode only");
-        return null;
-    }
 
     private void installGoogleLoginFix(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
