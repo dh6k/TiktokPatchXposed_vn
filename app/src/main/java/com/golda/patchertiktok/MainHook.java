@@ -170,12 +170,15 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private static final String[] ENTRANCE_CLASS_HINTS = {
             "tako", "tikbot", "incentive", "touchpoint", "reward", "coin",
-            "taskcenter", "earncoin", "cash_event"
+            "taskcenter", "earncoin", "cash_event", "rightbottomentrance",
+            "mainentrance", "feedicon"
     };
 
     private static final String[] ENTRANCE_RESOURCE_HINTS = {
             "tako", "tikbot", "incentive", "reward", "coin", "earn",
-            "task_icon", "task_center", "tap_to", "cash", "diamond"
+            "task_icon", "task_center", "tap_to", "cash", "diamond",
+            "right_container_tako", "tako_feed", "tikbot_layer",
+            "common_feed_layout_tikbot", "homepage_tako"
     };
 
     private void installTakoAndRewardServiceHooks(ClassLoader classLoader) {
@@ -185,13 +188,20 @@ public class MainHook implements IXposedHookLoadPackage {
                 "com.ss.android.ugc.aweme.tako.ITakoFeedIconService",
                 "com.ss.android.ugc.aweme.tako.ITakoService",
                 "com.ss.android.ugc.aweme.tako.ITakoLaunchService",
+                "com.ss.android.ugc.aweme.tako.otherpage.feed.mainentrance.ui.AbsTakoRightBottomEntrance",
+                "com.ss.android.ugc.aweme.tako.otherpage.feed.mainentrance.videmodel.TakoFeedRightBottomEntranceViewModel",
+                "com.ss.android.ugc.aweme.tako.feed.topicon.TakoFeedIconServiceImpl",
+                "com.ss.android.ugc.aweme.tako.feed.topicon.TakoTabIconLayoutProtocol",
                 "com.bytedance.touchpoint.IncentiveServiceImpl",
                 "com.bytedance.touchpoint.serviceimp.IncentiveBottomTabServiceImpl",
                 "com.bytedance.touchpoint.api.downgrade.DowngradeIncentiveServiceImpl",
                 "com.ss.android.ugc.aweme.sidebar.IncentiveSideBarComponent",
                 "com.bytedance.touchpoint.core.pendant.base.BaseTimerPendantManager",
                 "com.bytedance.touchpoint.core.pendant.feed.FeedTimerPendantManger",
-                "com.ss.android.ugc.aweme.specact.IncentiveSparkServiceImpl"
+                "com.ss.android.ugc.aweme.specact.IncentiveSparkServiceImpl",
+                "com.by.andInflater.common_feed_layout_tikbot",
+                "com.by.andInflater.common_feed_layout_tikbot_icon_bubble",
+                "com.by.andInflater.common_feed_layout_tikbot_roof"
         };
         int hooks = 0;
         for (String className : serviceClasses) {
@@ -199,6 +209,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 Class<?> cls = XposedHelpers.findClassIfExists(className, classLoader);
                 if (cls == null) continue;
                 for (Method method : cls.getDeclaredMethods()) {
+                    if (Modifier.isAbstract(method.getModifiers())) continue;
                     Class<?>[] params = method.getParameterTypes();
                     Class<?> ret = method.getReturnType();
                     String name = method.getName().toLowerCase(Locale.ROOT);
@@ -209,6 +220,8 @@ public class MainHook implements IXposedHookLoadPackage {
                             || name.contains("icon")
                             || name.contains("pendant")
                             || name.contains("guide")
+                            || name.contains("bind")
+                            || name.contains("refresh")
                             || name.startsWith("liz");
                     if (ret == boolean.class && params.length <= 2 && nameLooksUi) {
                         XposedBridge.hookMethod(method, XC_MethodReplacement.returnConstant(false));
@@ -227,13 +240,79 @@ public class MainHook implements IXposedHookLoadPackage {
                             }
                         });
                         hooks++;
+                    } else if (View.class.isAssignableFrom(ret) && params.length <= 2) {
+                        XposedBridge.hookMethod(method, new XC_MethodHook() {
+                            @Override
+                            protected void afterHookedMethod(MethodHookParam param) {
+                                hideViewTreeSafe(param.getResult());
+                            }
+                        });
+                        hooks++;
                     }
                 }
             } catch (Throwable t) {
                 XposedBridge.log(TAG + " [entrance service " + className + "] " + t);
             }
         }
+
+        // Hide feed-right Tako icon when any ViewGroup attaches it.
+        try {
+            XposedHelpers.findAndHookMethod(ViewGroup.class, "addView",
+                    View.class, new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            hideEntranceViews((View) param.args[0]);
+                        }
+                    });
+            XposedHelpers.findAndHookMethod(ViewGroup.class, "addView",
+                    View.class, int.class, new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            hideEntranceViews((View) param.args[0]);
+                        }
+                    });
+            XposedHelpers.findAndHookMethod(ViewGroup.class, "addView",
+                    View.class, ViewGroup.LayoutParams.class, new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            hideEntranceViews((View) param.args[0]);
+                        }
+                    });
+            hooks += 3;
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + " [addView hook] " + t);
+        }
+
+        try {
+            XposedHelpers.findAndHookMethod(ImageView.class, "setImageResource",
+                    int.class, new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            try {
+                                int resId = (Integer) param.args[0];
+                                String name = ((ImageView) param.thisObject)
+                                        .getResources().getResourceEntryName(resId)
+                                        .toLowerCase(Locale.ROOT);
+                                if (name.contains("tako") || name.contains("tikbot")
+                                        || name.contains("incentive") || name.contains("coin_task")) {
+                                    hideView(param.thisObject);
+                                }
+                            } catch (Throwable ignored) {
+                            }
+                        }
+                    });
+            hooks++;
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + " [setImageResource hook] " + t);
+        }
+
         XposedBridge.log(TAG + ": tako/reward service hooks=" + hooks);
+    }
+
+    private void hideViewTreeSafe(Object value) {
+        if (value instanceof View) {
+            hideViewTree((View) value);
+        }
     }
 
     private void installEntranceHider(Context context) {
@@ -287,12 +366,9 @@ public class MainHook implements IXposedHookLoadPackage {
     private boolean shouldHideEntranceView(View view) {
         if (view == null) return false;
         String className = view.getClass().getName().toLowerCase(Locale.ROOT);
-        for (String hint : ENTRANCE_CLASS_HINTS) {
-            if (className.contains(hint)) {
-                // Avoid wiping entire incentive page containers that are not icons.
-                if (className.contains("fragment") || className.contains("activity")) continue;
-                return true;
-            }
+        if (className.contains("tako") || className.contains("tikbot")
+                || className.contains("rightbottomentrance") || className.contains("feedicon")) {
+            return true;
         }
         int id = view.getId();
         if (id != View.NO_ID) {
@@ -307,10 +383,29 @@ public class MainHook implements IXposedHookLoadPackage {
         CharSequence content = view.getContentDescription();
         if (content != null) {
             String desc = content.toString().toLowerCase(Locale.ROOT);
-            if (desc.contains("tako") || desc.contains("reward") || desc.contains("incentive")
-                    || desc.contains("coin") || desc.contains("earn")) {
+            if (desc.contains("tako") || desc.contains("tikbot")
+                    || desc.contains("reward") || desc.contains("incentive")
+                    || desc.contains("coin") || desc.contains("earn")
+                    || desc.contains("trợ lý")) {
                 return true;
             }
+        }
+        // Parent chain: feed right container named tako/tikbot.
+        Object parent = view.getParent();
+        for (int depth = 0; parent instanceof View && depth < 4; depth++) {
+            View parentView = (View) parent;
+            String parentName = parentView.getClass().getName().toLowerCase(Locale.ROOT);
+            if (parentName.contains("tako") || parentName.contains("tikbot")) return true;
+            int pid = parentView.getId();
+            if (pid != View.NO_ID) {
+                try {
+                    String entry = parentView.getResources().getResourceEntryName(pid)
+                            .toLowerCase(Locale.ROOT);
+                    if (entry.contains("tako") || entry.contains("tikbot")) return true;
+                } catch (Throwable ignored) {
+                }
+            }
+            parent = parentView.getParent();
         }
         return false;
     }
