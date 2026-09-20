@@ -17,12 +17,15 @@ import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.File;
+
 /**
  * Lean settings screen. Defaults keep the previous hardcoded Vietnam behavior.
  */
 public final class SettingsActivity extends Activity {
 
     private SharedPreferences prefs;
+    private TextView statusView;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -37,7 +40,12 @@ public final class SettingsActivity extends Activity {
         scroll.addView(root);
 
         root.addView(header("TiktokPatchXposed"));
-        root.addView(note("Default = old hardcoded behavior. Force-stop TikTok after changes."));
+        statusView = note(buildStatus());
+        root.addView(statusView);
+        root.addView(note(
+                "This screen is the settings app, not an overlay inside TikTok.\n"
+                        + "After toggles change: force-stop TikTok, then reopen it.\n"
+                        + "Hook reads config via XSharedPreferences / provider / package-context."));
 
         root.addView(section("Vietnam profile"));
         bindSwitch(root, ModuleConfig.KEY_VIETNAM_REGION, "Vietnam SIM/region spoof");
@@ -84,7 +92,8 @@ public final class SettingsActivity extends Activity {
         Button reset = new Button(this);
         reset.setText("Reset to defaults");
         reset.setOnClickListener(v -> {
-            prefs.edit().clear().apply();
+            prefs.edit().clear().commit();
+            ModuleConfig.writeMirror(this, prefs);
             Toast.makeText(this, "Defaults restored. Restart TikTok.", Toast.LENGTH_LONG).show();
             recreate();
         });
@@ -93,6 +102,38 @@ public final class SettingsActivity extends Activity {
         root.addView(note("Xposed module may cause instability or account limits. Use at your own risk."));
 
         setContentView(scroll);
+    }
+
+    private String buildStatus() {
+        int keyCount;
+        try {
+            keyCount = prefs.getAll().size();
+        } catch (RuntimeException e) {
+            keyCount = -1;
+        }
+        String bridge;
+        try {
+            android.os.Bundle result = getContentResolver().call(
+                    ModuleConfig.settingsUri(), ModuleConfig.METHOD_PING, null, null);
+            bridge = (result != null && result.getBoolean("ok", false))
+                    ? "provider ping OK"
+                    : "provider ping failed";
+        } catch (RuntimeException e) {
+            bridge = "provider ping error: " + e.getClass().getSimpleName();
+        }
+        File mirror = new File(getFilesDir(), ModuleConfig.MIRROR_FILE);
+        return "Saved keys: " + keyCount
+                + " | " + bridge
+                + " | mirror: " + (mirror.isFile() ? "yes" + " (" + mirror.length() + "B)" : "no")
+                + "\nIf TikTok ignores toggles: open this app once, force-stop TikTok, check LSPosed log for \"config source=\".";
+    }
+
+    private void persist() {
+        // Values are committed before persist() call sites; refresh status + mirror.
+        ModuleConfig.writeMirror(this, prefs);
+        if (statusView != null) {
+            statusView.setText(buildStatus());
+        }
     }
 
     private TextView header(String text) {
@@ -124,8 +165,10 @@ public final class SettingsActivity extends Activity {
         CheckBox box = new CheckBox(this);
         box.setText(label);
         box.setChecked(prefs.getBoolean(key, defaultsBoolean(key)));
-        box.setOnCheckedChangeListener((buttonView, isChecked) ->
-                prefs.edit().putBoolean(key, isChecked).apply());
+        box.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            prefs.edit().putBoolean(key, isChecked).commit();
+            persist();
+        });
         root.addView(box);
     }
 
@@ -137,8 +180,10 @@ public final class SettingsActivity extends Activity {
         EditText input = new EditText(this);
         input.setSingleLine(true);
         input.setText(prefs.getString(key, fallback));
-        input.addTextChangedListener(new SimpleWatcher(value ->
-                prefs.edit().putString(key, value).apply()));
+        input.addTextChangedListener(new SimpleWatcher(value -> {
+            prefs.edit().putString(key, value).commit();
+            persist();
+        }));
         row.addView(caption);
         row.addView(input);
         root.addView(row);
@@ -152,8 +197,10 @@ public final class SettingsActivity extends Activity {
         EditText input = new EditText(this);
         input.setMinLines(2);
         input.setText(prefs.getString(key, fallback));
-        input.addTextChangedListener(new SimpleWatcher(value ->
-                prefs.edit().putString(key, value).apply()));
+        input.addTextChangedListener(new SimpleWatcher(value -> {
+            prefs.edit().putString(key, value).commit();
+            persist();
+        }));
         row.addView(caption);
         row.addView(input);
         root.addView(row);
@@ -180,7 +227,8 @@ public final class SettingsActivity extends Activity {
         spinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override
             public void onItemSelected(AdapterView<?> parent, android.view.View view, int position, long id) {
-                prefs.edit().putString(key, options[position]).apply();
+                prefs.edit().putString(key, options[position]).commit();
+                persist();
             }
 
             @Override

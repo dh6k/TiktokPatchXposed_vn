@@ -55,9 +55,9 @@ LSPosed-модуль с набором исправлений и дополни�
 
 An LSPosed module with fixes and additional features for TikTok.
 
-Current module version: **3.14** (`com.golda.patchertiktok`). Verified with TikTok **47.0.3** (`com.zhiliaoapp.musically`).
+Current module version: **3.15** (`com.golda.patchertiktok`). Verified with TikTok **47.0.3** (`com.zhiliaoapp.musically`).
 
-The module ships a settings screen (launcher activity) to toggle features. Defaults preserve the previous hardcoded Vietnam-patch behavior.
+The module ships a settings screen (launcher activity) to toggle features. Defaults preserve the previous hardcoded Vietnam-patch behavior. Open the module app once, change toggles, force-stop TikTok, then reopen TikTok. The hook loads settings via XSharedPreferences, ContentProvider, or a package-context mirror (Android 11+ package visibility can block the provider path).
 
 ### Features
 

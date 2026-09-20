@@ -109,8 +109,9 @@ public class MainHook implements IXposedHookLoadPackage {
                 protected void afterHookedMethod(MethodHookParam param) {
                     if (!installed.compareAndSet(false, true)) return;
                     Context context = (Context) param.args[0];
-                    config = ModuleConfig.loadFromProvider(context);
-                    XposedBridge.log(TAG + ": config " + config);
+                    config = ModuleConfig.load(context);
+                    XposedBridge.log(TAG + ": config source=" + ModuleConfig.lastLoadSource
+                            + " " + config);
                     installConfiguredHooks(lpparam, isMainProcess);
                 }
             });
