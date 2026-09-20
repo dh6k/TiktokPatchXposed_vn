@@ -104,6 +104,19 @@ public final class SettingsActivity extends Activity {
         setContentView(scroll);
     }
 
+    private String lastPersistNote = "";
+
+    private void persist() {
+        boolean broadcast = ModuleConfig.broadcastConfig(this, prefs);
+        boolean publicFile = ModuleConfig.writePublicMirror(this, prefs);
+        ModuleConfig.writeMirror(this, prefs);
+        lastPersistNote = "broadcast=" + (broadcast ? "sent" : "failed")
+                + " public-file=" + (publicFile ? "written" : "failed");
+        if (statusView != null) {
+            statusView.setText(buildStatus());
+        }
+    }
+
     private String buildStatus() {
         int keyCount;
         try {
@@ -125,15 +138,9 @@ public final class SettingsActivity extends Activity {
         return "Saved keys: " + keyCount
                 + " | " + bridge
                 + " | mirror: " + (mirror.isFile() ? "yes" + " (" + mirror.length() + "B)" : "no")
-                + "\nIf TikTok ignores toggles: open this app once, force-stop TikTok, check LSPosed log for \"config source=\".";
-    }
-
-    private void persist() {
-        // Values are committed before persist() call sites; refresh status + mirror.
-        ModuleConfig.writeMirror(this, prefs);
-        if (statusView != null) {
-            statusView.setText(buildStatus());
-        }
+                + (lastPersistNote.isEmpty() ? "" : " | " + lastPersistNote)
+                + "\n1) Open TikTok once (register receiver). 2) Change toggles here. "
+                + "3) Force-stop TikTok, reopen. Log should show config source=runtime-prefs or public-file.";
     }
 
     private TextView header(String text) {

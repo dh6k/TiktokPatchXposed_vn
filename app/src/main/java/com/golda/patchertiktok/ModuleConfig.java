@@ -1,14 +1,21 @@
 package com.golda.patchertiktok;
 
+import android.content.ContentResolver;
+import android.content.ContentValues;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
+import android.provider.MediaStore;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.Map;
@@ -26,6 +33,15 @@ public final class ModuleConfig {
     public static final String METHOD_GET_CONFIG = "getConfig";
     public static final String METHOD_PING = "ping";
     public static final String MIRROR_FILE = "module_settings.properties";
+    public static final String PUBLIC_MIRROR_NAME = "TiktokPatchXposed_config.properties";
+    public static final String ACTION_CONFIG = "com.golda.patchertiktok.ACTION_CONFIG";
+    public static final String EXTRA_CONFIG = "config";
+    /** Prefs stored inside TikTok's data dir after a config broadcast. */
+    public static final String RUNTIME_PREFS = "patcher_runtime_config";
+    private static final String[] TARGET_PACKAGES = {
+            "com.zhiliaoapp.musically",
+            "com.ss.android.ugc.trill"
+    };
 
     /** How the hook process last resolved config (for logs / diagnostics). */
     public static volatile String lastLoadSource = "unset";
@@ -292,36 +308,230 @@ public final class ModuleConfig {
 
     /**
      * Resolve settings from the TikTok/hook process.
-     * ContentProvider alone is unreliable on Android 11+ because TikTok cannot
-     * see the module package, so we try XSharedPreferences, provider,
-     * package-context prefs/file, then defaults.
+     * Many Xposed/LSPosed builds cannot read module prefs or the module
+     * ContentProvider from TikTok (package visibility / no remote prefs).
+     * Order: runtime prefs in TikTok (set after broadcast) -> Xposed prefs
+     * -> provider -> package-context -> public files -> defaults.
      */
     public static ModuleConfig load(Context hostContext) {
-        ModuleConfig fromXposed = loadViaXSharedPreferences();
+        StringBuilder trace = new StringBuilder();
+
+        ModuleConfig fromRuntime = loadRuntime(hostContext);
+        if (fromRuntime != null) {
+            lastLoadSource = "runtime-prefs|" + trace;
+            return fromRuntime;
+        }
+        trace.append("runtime=empty;");
+
+        ModuleConfig fromXposed = loadViaXSharedPreferences(trace);
         if (fromXposed != null) {
-            lastLoadSource = "xposed";
+            lastLoadSource = "xposed|" + trace;
             return fromXposed;
         }
 
-        ModuleConfig fromProvider = loadViaProvider(hostContext);
+        ModuleConfig fromProvider = loadViaProvider(hostContext, trace);
         if (fromProvider != null) {
-            lastLoadSource = "provider";
+            lastLoadSource = "provider|" + trace;
             return fromProvider;
         }
 
-        ModuleConfig fromPackage = loadViaPackageContext(hostContext);
+        ModuleConfig fromPackage = loadViaPackageContext(hostContext, trace);
         if (fromPackage != null) {
-            lastLoadSource = "package-context";
+            lastLoadSource = "package-context|" + trace;
             return fromPackage;
         }
 
-        lastLoadSource = "defaults";
+        ModuleConfig fromPublic = loadFromPublicFiles(trace);
+        if (fromPublic != null) {
+            lastLoadSource = "public-file|" + trace;
+            return fromPublic;
+        }
+
+        lastLoadSource = "defaults|" + trace;
         return defaults();
+    }
+
+    public static void saveRuntime(Context context, Bundle bundle) {
+        if (context == null || bundle == null) return;
+        SharedPreferences.Editor editor = context
+                .getSharedPreferences(RUNTIME_PREFS, Context.MODE_PRIVATE)
+                .edit();
+        editor.putBoolean(KEY_VIETNAM_REGION, bundle.getBoolean(KEY_VIETNAM_REGION, true));
+        editor.putBoolean(KEY_VIETNAMESE_LANGUAGE, bundle.getBoolean(KEY_VIETNAMESE_LANGUAGE, true));
+        editor.putBoolean(KEY_FEED_REGION_OVERRIDE, bundle.getBoolean(KEY_FEED_REGION_OVERRIDE, true));
+        editor.putBoolean(KEY_DOWNLOAD_NO_WATERMARK, bundle.getBoolean(KEY_DOWNLOAD_NO_WATERMARK, true));
+        editor.putBoolean(KEY_HIDE_FEED_ADS, bundle.getBoolean(KEY_HIDE_FEED_ADS, true));
+        editor.putBoolean(KEY_HIDE_LIVE, bundle.getBoolean(KEY_HIDE_LIVE, true));
+        editor.putBoolean(KEY_HIDE_SUGGESTED, bundle.getBoolean(KEY_HIDE_SUGGESTED, true));
+        editor.putBoolean(KEY_HIDE_SPLASH_ADS, bundle.getBoolean(KEY_HIDE_SPLASH_ADS, true));
+        editor.putBoolean(KEY_FORCE_SEEKBAR, bundle.getBoolean(KEY_FORCE_SEEKBAR, true));
+        editor.putBoolean(KEY_GOOGLE_LOGIN_FIX, bundle.getBoolean(KEY_GOOGLE_LOGIN_FIX, true));
+        editor.putBoolean(KEY_HIDE_PHOTO_POSTS, bundle.getBoolean(KEY_HIDE_PHOTO_POSTS, false));
+        editor.putBoolean(KEY_HIDE_AI_POSTS, bundle.getBoolean(KEY_HIDE_AI_POSTS, false));
+        editor.putBoolean(KEY_HIDE_LONG_POSTS, bundle.getBoolean(KEY_HIDE_LONG_POSTS, false));
+        editor.putString(KEY_LONG_POST_SECONDS, String.valueOf(bundle.getInt(KEY_LONG_POST_SECONDS, 60)));
+        editor.putBoolean(KEY_FILTER_METRICS, bundle.getBoolean(KEY_FILTER_METRICS, false));
+        editor.putString(KEY_VIEWS_MIN, String.valueOf(bundle.getLong(KEY_VIEWS_MIN, 0L)));
+        long viewsMax = bundle.getLong(KEY_VIEWS_MAX, Long.MAX_VALUE);
+        editor.putString(KEY_VIEWS_MAX, viewsMax == Long.MAX_VALUE ? "" : String.valueOf(viewsMax));
+        editor.putString(KEY_LIKES_MIN, String.valueOf(bundle.getLong(KEY_LIKES_MIN, 0L)));
+        long likesMax = bundle.getLong(KEY_LIKES_MAX, Long.MAX_VALUE);
+        editor.putString(KEY_LIKES_MAX, likesMax == Long.MAX_VALUE ? "" : String.valueOf(likesMax));
+        editor.putString(KEY_KEYWORD_BLACKLIST, bundle.getString(KEY_KEYWORD_BLACKLIST, ""));
+        editor.putBoolean(KEY_PLAYBACK_SPEED_ENABLED, bundle.getBoolean(KEY_PLAYBACK_SPEED_ENABLED, false));
+        editor.putString(KEY_PLAYBACK_SPEED, String.valueOf(bundle.getDouble(KEY_PLAYBACK_SPEED, 1.25)));
+        editor.putBoolean(KEY_HIDE_AUTHOR_AVATAR, bundle.getBoolean(KEY_HIDE_AUTHOR_AVATAR, false));
+        editor.putBoolean(KEY_HIDE_AUTHOR_INFO, bundle.getBoolean(KEY_HIDE_AUTHOR_INFO, false));
+        editor.putBoolean(KEY_HIDE_VIDEO_DESC, bundle.getBoolean(KEY_HIDE_VIDEO_DESC, false));
+        editor.putBoolean(KEY_HIDE_MUSIC_TITLE, bundle.getBoolean(KEY_HIDE_MUSIC_TITLE, false));
+        editor.putBoolean(KEY_HIDE_ACTION_BUTTONS, bundle.getBoolean(KEY_HIDE_ACTION_BUTTONS, false));
+        editor.putBoolean(KEY_HIDE_TOP_NAV, bundle.getBoolean(KEY_HIDE_TOP_NAV, false));
+        editor.putBoolean(KEY_HIDE_SEARCH, bundle.getBoolean(KEY_HIDE_SEARCH, false));
+        editor.putBoolean(KEY_HIDE_BOTTOM_NAV, bundle.getBoolean(KEY_HIDE_BOTTOM_NAV, false));
+        editor.commit();
+    }
+
+    public static ModuleConfig loadRuntime(Context context) {
+        if (context == null) return null;
+        try {
+            SharedPreferences prefs = context.getSharedPreferences(RUNTIME_PREFS, Context.MODE_PRIVATE);
+            if (isEmptyPrefs(prefs)) return null;
+            return fromPreferences(prefs);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /** Broadcast current settings into running TikTok processes. */
+    public static boolean broadcastConfig(Context moduleContext, SharedPreferences prefs) {
+        if (moduleContext == null || prefs == null) return false;
+        Bundle bundle = fromPreferences(prefs).toBundle();
+        bundle.putBoolean("ok", true);
+        int sent = 0;
+        for (String pkg : TARGET_PACKAGES) {
+            try {
+                Intent intent = new Intent(ACTION_CONFIG);
+                intent.setPackage(pkg);
+                intent.putExtra(EXTRA_CONFIG, bundle);
+                moduleContext.sendBroadcast(intent);
+                sent++;
+            } catch (Throwable ignored) {
+            }
+        }
+        return sent > 0;
+    }
+
+    public static boolean writePublicMirror(Context moduleContext, SharedPreferences prefs) {
+        if (moduleContext == null || prefs == null) return false;
+        Properties properties = propertiesFromPrefs(prefs);
+        // MediaStore Downloads (Android 10+)
+        if (Build.VERSION.SDK_INT >= 29) {
+            try {
+                ContentResolver cr = moduleContext.getContentResolver();
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.Downloads.DISPLAY_NAME, PUBLIC_MIRROR_NAME);
+                values.put(MediaStore.Downloads.MIME_TYPE, "text/plain");
+                values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                Uri uri = cr.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                if (uri != null) {
+                    try (OutputStream out = cr.openOutputStream(uri)) {
+                        if (out != null) {
+                            properties.store(out, "TiktokPatchXposed");
+                            return true;
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        File[] candidates = publicMirrorFiles();
+        for (File file : candidates) {
+            try {
+                File parent = file.getParentFile();
+                if (parent != null && !parent.exists()) {
+                    //noinspection ResultOfMethodCallIgnored
+                    parent.mkdirs();
+                }
+                try (FileOutputStream out = new FileOutputStream(file)) {
+                    properties.store(out, "TiktokPatchXposed");
+                    return true;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        return false;
+    }
+
+    private static File[] publicMirrorFiles() {
+        File downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+        File docs = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS);
+        File root = Environment.getExternalStorageDirectory();
+        return new File[]{
+                new File(downloads, PUBLIC_MIRROR_NAME),
+                new File(docs, PUBLIC_MIRROR_NAME),
+                new File(root, PUBLIC_MIRROR_NAME),
+                new File(root, "TiktokPatchXposed/" + PUBLIC_MIRROR_NAME)
+        };
+    }
+
+    static ModuleConfig loadFromPublicFiles(StringBuilder trace) {
+        File[] files = publicMirrorFiles();
+        for (File file : files) {
+            try {
+                if (!file.isFile() || file.length() <= 0) continue;
+                Properties properties = new Properties();
+                try (FileInputStream in = new FileInputStream(file)) {
+                    properties.load(in);
+                }
+                if (!properties.isEmpty()) {
+                    if (trace != null) trace.append("public=").append(file.getAbsolutePath()).append(';');
+                    return fromProperties(properties);
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        return null;
+    }
+
+    private static Properties propertiesFromPrefs(SharedPreferences prefs) {
+        Properties properties = new Properties();
+        properties.setProperty(KEY_VIETNAM_REGION, String.valueOf(prefs.getBoolean(KEY_VIETNAM_REGION, true)));
+        properties.setProperty(KEY_VIETNAMESE_LANGUAGE, String.valueOf(prefs.getBoolean(KEY_VIETNAMESE_LANGUAGE, true)));
+        properties.setProperty(KEY_FEED_REGION_OVERRIDE, String.valueOf(prefs.getBoolean(KEY_FEED_REGION_OVERRIDE, true)));
+        properties.setProperty(KEY_DOWNLOAD_NO_WATERMARK, String.valueOf(prefs.getBoolean(KEY_DOWNLOAD_NO_WATERMARK, true)));
+        properties.setProperty(KEY_HIDE_FEED_ADS, String.valueOf(prefs.getBoolean(KEY_HIDE_FEED_ADS, true)));
+        properties.setProperty(KEY_HIDE_LIVE, String.valueOf(prefs.getBoolean(KEY_HIDE_LIVE, true)));
+        properties.setProperty(KEY_HIDE_SUGGESTED, String.valueOf(prefs.getBoolean(KEY_HIDE_SUGGESTED, true)));
+        properties.setProperty(KEY_HIDE_SPLASH_ADS, String.valueOf(prefs.getBoolean(KEY_HIDE_SPLASH_ADS, true)));
+        properties.setProperty(KEY_FORCE_SEEKBAR, String.valueOf(prefs.getBoolean(KEY_FORCE_SEEKBAR, true)));
+        properties.setProperty(KEY_GOOGLE_LOGIN_FIX, String.valueOf(prefs.getBoolean(KEY_GOOGLE_LOGIN_FIX, true)));
+        properties.setProperty(KEY_HIDE_PHOTO_POSTS, String.valueOf(prefs.getBoolean(KEY_HIDE_PHOTO_POSTS, false)));
+        properties.setProperty(KEY_HIDE_AI_POSTS, String.valueOf(prefs.getBoolean(KEY_HIDE_AI_POSTS, false)));
+        properties.setProperty(KEY_HIDE_LONG_POSTS, String.valueOf(prefs.getBoolean(KEY_HIDE_LONG_POSTS, false)));
+        properties.setProperty(KEY_LONG_POST_SECONDS, prefs.getString(KEY_LONG_POST_SECONDS, "60"));
+        properties.setProperty(KEY_FILTER_METRICS, String.valueOf(prefs.getBoolean(KEY_FILTER_METRICS, false)));
+        properties.setProperty(KEY_VIEWS_MIN, prefs.getString(KEY_VIEWS_MIN, "0"));
+        properties.setProperty(KEY_VIEWS_MAX, prefs.getString(KEY_VIEWS_MAX, ""));
+        properties.setProperty(KEY_LIKES_MIN, prefs.getString(KEY_LIKES_MIN, "0"));
+        properties.setProperty(KEY_LIKES_MAX, prefs.getString(KEY_LIKES_MAX, ""));
+        properties.setProperty(KEY_KEYWORD_BLACKLIST, prefs.getString(KEY_KEYWORD_BLACKLIST, ""));
+        properties.setProperty(KEY_PLAYBACK_SPEED_ENABLED, String.valueOf(prefs.getBoolean(KEY_PLAYBACK_SPEED_ENABLED, false)));
+        properties.setProperty(KEY_PLAYBACK_SPEED, prefs.getString(KEY_PLAYBACK_SPEED, "1.25"));
+        properties.setProperty(KEY_HIDE_AUTHOR_AVATAR, String.valueOf(prefs.getBoolean(KEY_HIDE_AUTHOR_AVATAR, false)));
+        properties.setProperty(KEY_HIDE_AUTHOR_INFO, String.valueOf(prefs.getBoolean(KEY_HIDE_AUTHOR_INFO, false)));
+        properties.setProperty(KEY_HIDE_VIDEO_DESC, String.valueOf(prefs.getBoolean(KEY_HIDE_VIDEO_DESC, false)));
+        properties.setProperty(KEY_HIDE_MUSIC_TITLE, String.valueOf(prefs.getBoolean(KEY_HIDE_MUSIC_TITLE, false)));
+        properties.setProperty(KEY_HIDE_ACTION_BUTTONS, String.valueOf(prefs.getBoolean(KEY_HIDE_ACTION_BUTTONS, false)));
+        properties.setProperty(KEY_HIDE_TOP_NAV, String.valueOf(prefs.getBoolean(KEY_HIDE_TOP_NAV, false)));
+        properties.setProperty(KEY_HIDE_SEARCH, String.valueOf(prefs.getBoolean(KEY_HIDE_SEARCH, false)));
+        properties.setProperty(KEY_HIDE_BOTTOM_NAV, String.valueOf(prefs.getBoolean(KEY_HIDE_BOTTOM_NAV, false)));
+        return properties;
     }
 
     /** Used by the settings app itself (same UID as provider + prefs). */
     public static ModuleConfig loadFromProvider(Context context) {
-        ModuleConfig config = loadViaProvider(context);
+        StringBuilder trace = new StringBuilder();
+        ModuleConfig config = loadViaProvider(context, trace);
         if (config != null) {
             lastLoadSource = "provider-self";
             return config;
@@ -334,11 +544,11 @@ public final class ModuleConfig {
             }
         } catch (RuntimeException ignored) {
         }
-        lastLoadSource = "defaults";
+        lastLoadSource = "defaults|" + trace;
         return defaults();
     }
 
-    private static ModuleConfig loadViaXSharedPreferences() {
+    private static ModuleConfig loadViaXSharedPreferences(StringBuilder trace) {
         try {
             Class<?> clazz = Class.forName("de.robv.android.xposed.XSharedPreferences");
             Object prefs = clazz
@@ -353,34 +563,50 @@ public final class ModuleConfig {
             } catch (Throwable ignored) {
             }
             if (!(prefs instanceof SharedPreferences)) {
+                if (trace != null) {
+                    trace.append("xposed=not-sharedprefs:").append(prefs == null ? "null" : prefs.getClass().getName()).append(';');
+                }
                 return null;
             }
             SharedPreferences sp = (SharedPreferences) prefs;
-            if (isEmptyPrefs(sp)) {
+            int size = -1;
+            try {
+                size = sp.getAll() == null ? -1 : sp.getAll().size();
+            } catch (Throwable ignored) {
+            }
+            if (size <= 0) {
+                if (trace != null) trace.append("xposed=empty(").append(size).append(");");
                 return null;
             }
+            if (trace != null) trace.append("xposed=ok(").append(size).append(");");
             return fromPreferences(sp);
-        } catch (Throwable ignored) {
+        } catch (Throwable t) {
+            if (trace != null) trace.append("xposed=err:").append(t.getClass().getSimpleName()).append(';');
             return null;
         }
     }
 
-    private static ModuleConfig loadViaProvider(Context context) {
+    private static ModuleConfig loadViaProvider(Context context, StringBuilder trace) {
         if (context == null) return null;
         try {
             Bundle result = context.getContentResolver().call(
                     settingsUri(), METHOD_GET_CONFIG, null, null);
-            if (result == null) return null;
+            if (result == null) {
+                if (trace != null) trace.append("provider=null;");
+                return null;
+            }
             if (!result.getBoolean("ok", false) && !result.containsKey(KEY_VIETNAM_REGION)) {
+                if (trace != null) trace.append("provider=not-ok;");
                 return null;
             }
             return fromBundle(result);
-        } catch (RuntimeException ignored) {
+        } catch (RuntimeException t) {
+            if (trace != null) trace.append("provider=err:").append(t.getClass().getSimpleName()).append(';');
             return null;
         }
     }
 
-    private static ModuleConfig loadViaPackageContext(Context hostContext) {
+    private static ModuleConfig loadViaPackageContext(Context hostContext, StringBuilder trace) {
         if (hostContext == null) return null;
         try {
             Context moduleContext = hostContext.createPackageContext(
@@ -394,7 +620,11 @@ public final class ModuleConfig {
             if (properties != null && !properties.isEmpty()) {
                 return fromProperties(properties);
             }
-        } catch (Throwable ignored) {
+            if (trace != null) trace.append("package-context=empty;");
+        } catch (Throwable t) {
+            if (trace != null) {
+                trace.append("package-context=err:").append(t.getClass().getSimpleName()).append(';');
+            }
         }
         return null;
     }

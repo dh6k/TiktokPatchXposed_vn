@@ -2,8 +2,13 @@ package com.golda.patchertiktok;
 
 import android.app.Activity;
 import android.app.Application;
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.os.Build;
 import android.os.SystemClock;
+import android.os.Bundle;
 import android.telephony.TelephonyManager;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
@@ -112,6 +117,7 @@ public class MainHook implements IXposedHookLoadPackage {
                     config = ModuleConfig.load(context);
                     XposedBridge.log(TAG + ": config source=" + ModuleConfig.lastLoadSource
                             + " " + config);
+                    registerConfigReceiver(context);
                     installConfiguredHooks(lpparam, isMainProcess);
                 }
             });
@@ -121,6 +127,31 @@ public class MainHook implements IXposedHookLoadPackage {
                 config = ModuleConfig.defaults();
                 installConfiguredHooks(lpparam, isMainProcess);
             }
+        }
+    }
+
+    private void registerConfigReceiver(Context context) {
+        try {
+            BroadcastReceiver receiver = new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context receiverContext, Intent intent) {
+                    if (intent == null) return;
+                    Bundle bundle = intent.getBundleExtra(ModuleConfig.EXTRA_CONFIG);
+                    if (bundle == null) return;
+                    ModuleConfig.saveRuntime(receiverContext, bundle);
+                    XposedBridge.log(TAG + ": config broadcast saved to TikTok prefs; "
+                            + "force-stop TikTok to apply " + ModuleConfig.fromBundle(bundle));
+                }
+            };
+            IntentFilter filter = new IntentFilter(ModuleConfig.ACTION_CONFIG);
+            if (Build.VERSION.SDK_INT >= 33) {
+                context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED);
+            } else {
+                context.registerReceiver(receiver, filter);
+            }
+            XposedBridge.log(TAG + ": config broadcast receiver registered");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + " [config receiver] " + t);
         }
     }
 
