@@ -9,7 +9,6 @@ import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.ViewTreeObserver;
 import android.widget.ImageView;
 
 import java.lang.reflect.Field;
@@ -256,47 +255,44 @@ public class MainHook implements IXposedHookLoadPackage {
             }
         }
 
-        // Hide feed-right Tako icon when any ViewGroup attaches it.
+        // Cheap child-name check only — do not walk the subtree on every addView.
         try {
+            XC_MethodHook addViewHook = new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    Object child = param.args[0];
+                    if (!(child instanceof View)) return;
+                    View view = (View) child;
+                    if (isEntranceClassFast(view.getClass())
+                            || parentClassFast(view, "TakoAssem", "tikbot", "Tako")) {
+                        hideView(view);
+                    }
+                }
+            };
+            XposedHelpers.findAndHookMethod(ViewGroup.class, "addView", View.class, addViewHook);
+            XposedHelpers.findAndHookMethod(ViewGroup.class, "addView", View.class, int.class, addViewHook);
             XposedHelpers.findAndHookMethod(ViewGroup.class, "addView",
-                    View.class, new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            hideEntranceViews((View) param.args[0]);
-                        }
-                    });
-            XposedHelpers.findAndHookMethod(ViewGroup.class, "addView",
-                    View.class, int.class, new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            hideEntranceViews((View) param.args[0]);
-                        }
-                    });
-            XposedHelpers.findAndHookMethod(ViewGroup.class, "addView",
-                    View.class, ViewGroup.LayoutParams.class, new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) {
-                            hideEntranceViews((View) param.args[0]);
-                        }
-                    });
+                    View.class, ViewGroup.LayoutParams.class, addViewHook);
             hooks += 3;
         } catch (Throwable t) {
             XposedBridge.log(TAG + " [addView hook] " + t);
         }
 
+        // setImageResource: cache resource-name lookups; skip if class already rejected.
         try {
             XposedHelpers.findAndHookMethod(ImageView.class, "setImageResource",
                     int.class, new XC_MethodHook() {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam param) {
+                            ImageView image = (ImageView) param.thisObject;
+                            if (isEntranceClassFast(image.getClass())) {
+                                hideView(image);
+                                return;
+                            }
                             try {
                                 int resId = (Integer) param.args[0];
-                                String name = ((ImageView) param.thisObject)
-                                        .getResources().getResourceEntryName(resId)
-                                        .toLowerCase(Locale.ROOT);
-                                if (name.contains("tako") || name.contains("tikbot")
-                                        || name.contains("incentive") || name.contains("coin_task")) {
-                                    hideView(param.thisObject);
+                                if (isEntranceResourceId(image.getResources(), resId)) {
+                                    hideView(image);
                                 }
                             } catch (Throwable ignored) {
                             }
@@ -308,6 +304,49 @@ public class MainHook implements IXposedHookLoadPackage {
         }
 
         XposedBridge.log(TAG + ": tako/reward service hooks=" + hooks);
+    }
+
+    private static final java.util.concurrent.ConcurrentHashMap<Class<?>, Boolean> ENTRANCE_CLASS_CACHE =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private static final java.util.concurrent.ConcurrentHashMap<Integer, Boolean> ENTRANCE_RES_CACHE =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static boolean isEntranceClassFast(Class<?> cls) {
+        if (cls == null) return false;
+        Boolean cached = ENTRANCE_CLASS_CACHE.get(cls);
+        if (cached != null) return cached;
+        String name = cls.getName();
+        boolean hit = name.contains("Tako") || name.contains("tako")
+                || name.contains("tikbot") || name.contains("TikBot")
+                || name.contains("RightBottomEntrance") || name.contains("FeedIcon");
+        ENTRANCE_CLASS_CACHE.put(cls, hit);
+        return hit;
+    }
+
+    private static boolean isEntranceResourceId(android.content.res.Resources resources, int resId) {
+        if (resId == 0) return false;
+        Boolean cached = ENTRANCE_RES_CACHE.get(resId);
+        if (cached != null) return cached;
+        boolean hit = false;
+        try {
+            String entry = resources.getResourceEntryName(resId).toLowerCase(Locale.ROOT);
+            hit = entry.contains("tako") || entry.contains("tikbot")
+                    || entry.contains("right_container_tako")
+                    || entry.contains("tako_feed") || entry.contains("tikbot_layer");
+        } catch (Throwable ignored) {
+        }
+        ENTRANCE_RES_CACHE.put(resId, hit);
+        return hit;
+    }
+
+    private static boolean parentClassFast(View view, String... hints) {
+        Object current = view;
+        for (int i = 0; i < 4 && current instanceof View; i++) {
+            View v = (View) current;
+            if (isEntranceClassFast(v.getClass())) return true;
+            current = v.getParent();
+        }
+        return false;
     }
 
     /** Obfuscated 47.0.3 Tako feed-right factories (string xref). */
@@ -376,10 +415,13 @@ public class MainHook implements IXposedHookLoadPackage {
                         int.class, new XC_MethodHook() {
                             @Override
                             protected void beforeHookedMethod(MethodHookParam param) {
+                                int requested = (Integer) param.args[0];
+                                if (requested == View.GONE || requested == View.INVISIBLE) return;
                                 Object view = param.thisObject;
                                 if (!(view instanceof View)) return;
-                                if (shouldHideEntranceView((View) view)
-                                        || parentClassMatches(view, "tako", "tikbot")) {
+                                View v = (View) view;
+                                if (isEntranceClassFast(v.getClass())
+                                        || parentClassFast(v, "TakoAssem", "tikbot", "Tako")) {
                                     param.args[0] = View.GONE;
                                 }
                             }
@@ -390,26 +432,7 @@ public class MainHook implements IXposedHookLoadPackage {
             XposedBridge.log(TAG + " [ImageView visibility] " + t);
         }
 
-        // Catch-all: TikTok may re-show the icon after bind.
-        try {
-            XposedHelpers.findAndHookMethod(View.class, "setVisibility",
-                    int.class, new XC_MethodHook() {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam param) {
-                            int requested = (Integer) param.args[0];
-                            if (requested == View.GONE || requested == View.INVISIBLE) return;
-                            Object view = param.thisObject;
-                            if (view instanceof View
-                                    && (shouldHideEntranceView((View) view)
-                                    || parentClassMatches(view, "TakoAssem", "tikbot", "Tako"))) {
-                                param.args[0] = View.GONE;
-                            }
-                        }
-                    });
-            hooks++;
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + " [View.setVisibility] " + t);
-        }
+        // NOTE: no View.setVisibility catch-all — it fires on every UI update and causes lag.
 
         XposedBridge.log(TAG + ": obfuscated tako hooks=" + hooks);
     }
@@ -485,19 +508,21 @@ public class MainHook implements IXposedHookLoadPackage {
                         protected void afterHookedMethod(MethodHookParam param) {
                             Object activity = param.thisObject;
                             if (!(activity instanceof Activity)) return;
-                            View decor = ((Activity) activity).getWindow() == null
+                            final Activity act = (Activity) activity;
+                            View decor = act.getWindow() == null
                                     ? null
-                                    : ((Activity) activity).getWindow().getDecorView();
-                            if (decor != null) {
-                                decor.getViewTreeObserver().addOnGlobalLayoutListener(
-                                        new ViewTreeObserver.OnGlobalLayoutListener() {
-                                            @Override
-                                            public void onGlobalLayout() {
-                                                hideEntranceViews(decor);
-                                            }
-                                        });
-                                hideEntranceViews(decor);
-                            }
+                                    : act.getWindow().getDecorView();
+                            if (decor == null) return;
+                            // One delayed pass per resume — not every layout frame.
+                            decor.postDelayed(new Runnable() {
+                                @Override
+                                public void run() {
+                                    View d = act.getWindow() == null
+                                            ? null
+                                            : act.getWindow().getDecorView();
+                                    hideEntranceViewsShallow(d);
+                                }
+                            }, 400L);
                         }
                     });
             XposedBridge.log(TAG + ": tako/reward entrance layout hooks installed");
@@ -506,17 +531,28 @@ public class MainHook implements IXposedHookLoadPackage {
         }
     }
 
+    /** Depth-limited walk: cheap enough for a single post-resume pass. */
+    private void hideEntranceViewsShallow(View root) {
+        hideEntranceViews(root, 0);
+    }
+
     private void hideEntranceViews(View root) {
-        if (root == null) return;
+        hideEntranceViews(root, 0);
+    }
+
+    private void hideEntranceViews(View root, int depth) {
+        if (root == null || depth > 8) return;
         try {
-            if (shouldHideEntranceView(root)) {
+            if (isEntranceClassFast(root.getClass()) || parentClassFast(root, "TakoAssem", "tikbot")) {
                 hideView(root);
                 return;
             }
             if (!(root instanceof ViewGroup)) return;
             ViewGroup group = (ViewGroup) root;
-            for (int i = 0; i < group.getChildCount(); i++) {
-                hideEntranceViews(group.getChildAt(i));
+            int count = group.getChildCount();
+            if (count > 80) count = 80;
+            for (int i = 0; i < count; i++) {
+                hideEntranceViews(group.getChildAt(i), depth + 1);
             }
         } catch (Throwable ignored) {
         }

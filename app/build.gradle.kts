@@ -10,8 +10,8 @@ android {
         applicationId = "com.golda.patchertiktok"
         minSdk = 24
         targetSdk = 36
-        versionCode = 48
-        versionName = "3.22"
+        versionCode = 49
+        versionName = "3.23"
 
     }
 
