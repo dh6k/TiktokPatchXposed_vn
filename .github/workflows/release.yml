@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: "versionName (blank = keep build.gradle.kts)"
+        required: false
+        default: ""
+      version_code:
+        description: "versionCode (blank = keep build.gradle.kts)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Bump version if provided
+        env:
+          VERSION_NAME: ${{ inputs.version_name }}
+          VERSION_CODE: ${{ inputs.version_code }}
+        run: |
+          set -euo pipefail
+          if [ -n "${VERSION_CODE}" ]; then
+            sed -i "s/versionCode = [0-9]*/versionCode = ${VERSION_CODE}/" app/build.gradle.kts
+          fi
+          if [ -n "${VERSION_NAME}" ]; then
+            sed -i "s/versionName = \"[^\"]*\"/versionName = \"${VERSION_NAME}\"/" app/build.gradle.kts
+          fi
+          grep -E "versionCode|versionName" app/build.gradle.kts
+
+      - name: Read version
+        id: ver
+        run: |
+          NAME=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -1)
+          CODE=$(sed -n 's/.*versionCode = \([0-9][0-9]*\).*/\1/p' app/build.gradle.kts | head -1)
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "Using versionName=$NAME versionCode=$CODE"
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build release APK
+        run: ./gradlew assembleRelease --no-daemon
+
+      - name: Collect APK
+        run: |
+          mkdir -p dist
+          find app/build/outputs/apk/release -name '*.apk' -print -exec cp {} dist/ \;
+          ls -la dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.name }}
+          name: TiktokPatchXposed v${{ steps.ver.outputs.name }}
+          body: |
+            Module version `${{ steps.ver.outputs.name }}` (versionCode ${{ steps.ver.outputs.code }}).
+            Target: TikTok 47.0.3 (`com.zhiliaoapp.musically`).
+            Install APK, enable in LSPosed, force-stop TikTok.
+          files: dist/*.apk
+          generate_release_notes: true
+          fail_on_unmatched_files: true
