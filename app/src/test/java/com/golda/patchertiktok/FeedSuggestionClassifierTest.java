@@ -13,6 +13,8 @@ public class FeedSuggestionClassifierTest {
         assertTrue(FeedSuggestionClassifier.hasAcquaintanceMarker("Ваши вероятные знакомые"));
         assertTrue(FeedSuggestionClassifier.hasAcquaintanceMarker("Возможные знакомые"));
         assertTrue(FeedSuggestionClassifier.hasAcquaintanceMarker("maf"));
+        assertTrue(FeedSuggestionClassifier.hasAcquaintanceMarker("Người bạn có thể biết"));
+        assertTrue(FeedSuggestionClassifier.hasAcquaintanceMarker("nguoi ban co the biet"));
     }
 
     @Test

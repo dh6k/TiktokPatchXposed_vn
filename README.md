@@ -2,7 +2,9 @@
 
 LSPosed-модуль с набором исправлений и дополнительных функций для TikTok.
 
-Текущая версия модуля: **3.12** (`com.golda.patchertiktok`). Работа проверена с TikTok **46.7.3** (`com.zhiliaoapp.musically`).
+Текущая версия модуля: **3.14** (`com.golda.patchertiktok`). Работа проверена с TikTok **47.0.3** (`com.zhiliaoapp.musically`).
+
+Модуль имеет экран настроек (launcher activity) для включения/выключения функций. Значения по умолчанию сохраняют прежнее поведение Vietnam-патча.
 
 ## Возможности
 
@@ -29,7 +31,7 @@ LSPosed-модуль с набором исправлений и дополни�
 
 ## Совместимость
 
-Работа проверена с TikTok 46.7.3.
+Работа проверена с TikTok 47.0.3.
 
 После обновления TikTok внутренние обфусцированные классы могут измениться.
 
@@ -53,10 +55,16 @@ LSPosed-модуль с набором исправлений и дополни�
 
 An LSPosed module with fixes and additional features for TikTok.
 
-Current module version: **3.12** (`com.golda.patchertiktok`). Verified with TikTok **46.7.3** (`com.zhiliaoapp.musically`).
+Current module version: **3.14** (`com.golda.patchertiktok`). Verified with TikTok **47.0.3** (`com.zhiliaoapp.musically`).
+
+The module ships a settings screen (launcher activity) to toggle features. Defaults preserve the previous hardcoded Vietnam-patch behavior.
 
 ### Features
 
+- Settings screen (Activity + ContentProvider): Vietnam profile, feed filters, seekbar, download, playback speed, keyword blacklist, views/likes range, page purification.
+- Hide photo posts, AI-generated posts and long videos (configurable threshold).
+- Keyword blacklist for captions/hashtags and view/like count ranges.
+- Optional playback speed 1.0x–2.0x (best-effort on TikTok 47.0.3 player hooks).
 - Vietnam SIM/operator spoof for regional feature availability with Vietnamese app language.
 - Vietnamese recommendation-feed request profile (`VN`, `45204`, `vi-VN`).
 - Download videos without a watermark.
@@ -80,7 +88,7 @@ Current module version: **3.12** (`com.golda.patchertiktok`). Verified with TikT
 
 ### Compatibility and installation
 
-Verified with TikTok 46.7.3.
+Verified with TikTok 47.0.3.
 
 1. Install the module APK.
 2. Enable it for TikTok in LSPosed.
