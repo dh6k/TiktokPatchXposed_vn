@@ -20,9 +20,9 @@ public final class ModuleConfig {
     public final boolean hideSplashAds = true;
     public final boolean forceSeekbar = true;
     public final boolean googleLoginFix = true;
-    public final boolean hidePhotoPosts = true;
-    public final boolean hideAiPosts = true;
-    public final boolean hideLongPosts = true;
+    public final boolean hidePhotoPosts = false;
+    public final boolean hideAiPosts = false;
+    public final boolean hideLongPosts = false;
     public final int longPostSeconds = 60;
     public final boolean filterMetrics = false;
     public final long viewsMin = 0L;
@@ -30,8 +30,8 @@ public final class ModuleConfig {
     public final long likesMin = 0L;
     public final long likesMax = Long.MAX_VALUE;
     public final java.util.Set<String> keywordBlacklist = Collections.emptySet();
-    public final boolean playbackSpeedEnabled = true;
-    public final float playbackSpeed = 2.0f;
+    public final boolean playbackSpeedEnabled = false;
+    public final float playbackSpeed = 1.0f;
     public final boolean hideAuthorAvatar = false;
     public final boolean hideAuthorInfo = false;
     public final boolean hideVideoDesc = false;
@@ -82,7 +82,7 @@ public final class ModuleConfig {
 
     @Override
     public String toString() {
-        return "ModuleConfig{hardcoded vn=true, ads=true, photo/ai/long=true, speed="
-                + playbackSpeed + ", tako=" + hideTakoIcon + ", reward=" + hideRewardEntrance + "}";
+        return "ModuleConfig{hardcoded vn=true, ads=true, photo/ai/long=false, speed="
+                + playbackSpeedEnabled + ", tako=" + hideTakoIcon + ", reward=" + hideRewardEntrance + "}";
     }
 }
