@@ -105,18 +105,6 @@ public class MainHook implements IXposedHookLoadPackage {
         config = ModuleConfig.defaults();
         XposedBridge.log(TAG + ": config " + config);
         final boolean isMainProcess = lpparam.packageName.equals(lpparam.processName);
-        try {
-            Method attach = Application.class.getDeclaredMethod("attach", Context.class);
-            XposedBridge.hookMethod(attach, new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    Context context = (Context) param.args[0];
-                    installEntranceHider(context);
-                }
-            });
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + " [attach hook] " + t);
-        }
         installConfiguredHooks(lpparam, isMainProcess);
     }
 
@@ -158,8 +146,13 @@ public class MainHook implements IXposedHookLoadPackage {
         if (config.googleLoginFix) {
             installGoogleLoginFix(lpparam);
         }
-        if (config.anyPurificationEnabled()) {
+        if (config.hideAuthorAvatar || config.hideAuthorInfo || config.hideVideoDesc
+                || config.hideMusicTitle || config.hideActionButtons || config.hideTopNav
+                || config.hideSearch || config.hideBottomNav) {
             installPurification(lpparam.classLoader);
+        }
+        if (config.hideTakoIcon || config.hideRewardEntrance) {
+            // Targeted only — no LayoutInflater/addView/setVisibility scans (scroll lag).
             installTakoAndRewardServiceHooks(lpparam.classLoader);
             installObfuscatedTakoHooks(lpparam.classLoader);
         }
@@ -255,54 +248,8 @@ public class MainHook implements IXposedHookLoadPackage {
             }
         }
 
-        // Cheap child-name check only — do not walk the subtree on every addView.
-        try {
-            XC_MethodHook addViewHook = new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    Object child = param.args[0];
-                    if (!(child instanceof View)) return;
-                    View view = (View) child;
-                    if (isEntranceClassFast(view.getClass())
-                            || parentClassFast(view, "TakoAssem", "tikbot", "Tako")) {
-                        hideView(view);
-                    }
-                }
-            };
-            XposedHelpers.findAndHookMethod(ViewGroup.class, "addView", View.class, addViewHook);
-            XposedHelpers.findAndHookMethod(ViewGroup.class, "addView", View.class, int.class, addViewHook);
-            XposedHelpers.findAndHookMethod(ViewGroup.class, "addView",
-                    View.class, ViewGroup.LayoutParams.class, addViewHook);
-            hooks += 3;
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + " [addView hook] " + t);
-        }
-
-        // setImageResource: cache resource-name lookups; skip if class already rejected.
-        try {
-            XposedHelpers.findAndHookMethod(ImageView.class, "setImageResource",
-                    int.class, new XC_MethodHook() {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam param) {
-                            ImageView image = (ImageView) param.thisObject;
-                            if (isEntranceClassFast(image.getClass())) {
-                                hideView(image);
-                                return;
-                            }
-                            try {
-                                int resId = (Integer) param.args[0];
-                                if (isEntranceResourceId(image.getResources(), resId)) {
-                                    hideView(image);
-                                }
-                            } catch (Throwable ignored) {
-                            }
-                        }
-                    });
-            hooks++;
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + " [setImageResource hook] " + t);
-        }
-
+        // No ViewGroup.addView / ImageView.setImageResource hooks — they fire on every
+        // feed cell bind and cause scroll jank. Tako stays hidden via TakoAssem + factories.
         XposedBridge.log(TAG + ": tako/reward service hooks=" + hooks);
     }
 
@@ -358,22 +305,29 @@ public class MainHook implements IXposedHookLoadPackage {
         hooks += hookBooleanMethods(classLoader, "X.0Qyg", false);
         hooks += hookBooleanMethods(classLoader, "X.0B9m", false);
 
-        // TakoAssem: hide every ImageView/View field after any instance method.
+        // TakoAssem: bool flags off; only show/refresh/bind/icon voids.
         Class<?> takoAssem = XposedHelpers.findClassIfExists(
                 "com.ss.android.ugc.aweme.feed.assem.tikbot.TakoAssem", classLoader);
         if (takoAssem != null) {
             for (Method method : takoAssem.getDeclaredMethods()) {
                 if (Modifier.isAbstract(method.getModifiers())) continue;
                 Class<?> ret = method.getReturnType();
+                String name = method.getName();
                 if (ret == boolean.class) {
                     XposedBridge.hookMethod(method, XC_MethodReplacement.returnConstant(false));
                     hooks++;
-                } else if (ret == void.class || View.class.isAssignableFrom(ret)) {
+                    continue;
+                }
+                String lower = name.toLowerCase(Locale.ROOT);
+                if (ret == void.class
+                        && (lower.contains("show") || lower.contains("refresh")
+                        || lower.contains("bind") || lower.contains("icon")
+                        || lower.contains("entrance"))) {
                     XposedBridge.hookMethod(method, new XC_MethodHook() {
                         @Override
                         protected void afterHookedMethod(MethodHookParam param) {
-                            hideImageViewFields(param.thisObject);
-                            hideViewTreeSafe(param.getResult());
+                            hideNamedViewFields(param.thisObject,
+                                    "LLJJIJIIJIL", "LLJJIJIL", "LLJJJ");
                         }
                     });
                     hooks++;
@@ -384,55 +338,22 @@ public class MainHook implements IXposedHookLoadPackage {
             XposedBridge.log(TAG + ": TakoAssem class not found by name");
         }
 
-        // Lambdas that refresh/show the feed-right tako icon.
-        String[] lambdaClasses = {"X.0XGj", "X.0XGl", "X.0XHJ", "X.0XHK"};
-        for (String name : lambdaClasses) {
-            Class<?> cls = XposedHelpers.findClassIfExists(name, classLoader);
-            if (cls == null) continue;
-            for (Method method : cls.getDeclaredMethods()) {
+        // Only the lambda class that holds the feed-right icon views.
+        Class<?> iconRefresh = XposedHelpers.findClassIfExists("X.0XHK", classLoader);
+        if (iconRefresh != null) {
+            for (Method method : iconRefresh.getDeclaredMethods()) {
                 if (!method.getName().startsWith("invoke")) continue;
                 if (Modifier.isAbstract(method.getModifiers())) continue;
                 XposedBridge.hookMethod(method, new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) {
-                        hideImageViewFields(param.thisObject);
-                        hideViewTreeSafe(param.getResult());
+                        hideNamedViewFields(param.thisObject,
+                                "LLJJIJIIJIL", "LLJJIJIL", "LLJJJ");
                     }
                 });
                 hooks++;
             }
         }
-
-        // ImageView/SmartImageView: never stay VISIBLE once tagged as tako/tikbot.
-        try {
-            Class<?> smart = XposedHelpers.findClassIfExists(
-                    "com.bytedance.lighten.loader.SmartImageView", classLoader);
-            Class<?>[] imageClasses = smart == null
-                    ? new Class<?>[]{ImageView.class}
-                    : new Class<?>[]{ImageView.class, smart};
-            for (Class<?> imageClass : imageClasses) {
-                XposedHelpers.findAndHookMethod(imageClass, "setVisibility",
-                        int.class, new XC_MethodHook() {
-                            @Override
-                            protected void beforeHookedMethod(MethodHookParam param) {
-                                int requested = (Integer) param.args[0];
-                                if (requested == View.GONE || requested == View.INVISIBLE) return;
-                                Object view = param.thisObject;
-                                if (!(view instanceof View)) return;
-                                View v = (View) view;
-                                if (isEntranceClassFast(v.getClass())
-                                        || parentClassFast(v, "TakoAssem", "tikbot", "Tako")) {
-                                    param.args[0] = View.GONE;
-                                }
-                            }
-                        });
-                hooks++;
-            }
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + " [ImageView visibility] " + t);
-        }
-
-        // NOTE: no View.setVisibility catch-all — it fires on every UI update and causes lag.
 
         XposedBridge.log(TAG + ": obfuscated tako hooks=" + hooks);
     }
@@ -455,40 +376,27 @@ public class MainHook implements IXposedHookLoadPackage {
         }
     }
 
-    private void hideImageViewFields(Object target) {
+    private void hideNamedViewFields(Object target, String... fieldNames) {
         if (target == null) return;
-        for (Class<?> cls = target.getClass(); cls != null; cls = cls.getSuperclass()) {
-            for (Field field : cls.getDeclaredFields()) {
-                Class<?> type = field.getType();
-                if (!View.class.isAssignableFrom(type)) continue;
-                try {
-                    field.setAccessible(true);
-                    Object value = field.get(target);
-                    if (value instanceof View) {
-                        hideView(value);
+        for (String fieldName : fieldNames) {
+            try {
+                Field field = findFieldRecursive(target.getClass(), fieldName);
+                if (field == null) continue;
+                field.setAccessible(true);
+                Object value = field.get(target);
+                if (value instanceof View) {
+                    View view = (View) value;
+                    if (view.getVisibility() != View.GONE) {
+                        hideView(view);
                     }
-                } catch (Throwable ignored) {
                 }
+            } catch (Throwable ignored) {
             }
         }
     }
 
-    private boolean parentClassMatches(Object view, String... hints) {
-        Object current = view;
-        for (int i = 0; i < 6 && current != null; i++) {
-            String name;
-            if (current instanceof View) {
-                name = current.getClass().getName();
-                current = ((View) current).getParent();
-            } else {
-                name = current.getClass().getName();
-                break;
-            }
-            for (String hint : hints) {
-                if (name.contains(hint)) return true;
-            }
-        }
-        return false;
+    private void hideImageViewFields(Object target) {
+        hideNamedViewFields(target, "LLJJIJIIJIL", "LLJJIJIL", "LLJJJ");
     }
 
     private void hideViewTreeSafe(Object value) {
@@ -1223,6 +1131,9 @@ public class MainHook implements IXposedHookLoadPackage {
         }
     }
 
+    private static final String FILTER_REMOVE_KEY =
+            "com.golda.patchertiktok.feed_remove";
+
     private List<?> filterFeedItems(List<?> items) {
         if (items == null || items.isEmpty()) return items;
 
@@ -1230,23 +1141,45 @@ public class MainHook implements IXposedHookLoadPackage {
         for (int index = 0; index < items.size(); index++) {
             Object item = items.get(index);
             Object aweme = unwrapAweme(item);
-            boolean remove = FeedFilterPolicy.shouldRemove(
-                    config.hideFeedAds,
-                    config.hideLive,
-                    config.hideSuggested,
-                    config.hidePhotoPosts,
-                    config.hideAiPosts,
-                    config.hideLongPosts,
-                    config.filterMetrics,
-                    isAdItem(item) || isAdItem(aweme),
-                    isLiveItem(item) || isLiveItem(aweme),
-                    isSuggestedAcquaintance(aweme),
-                    isPhotoPost(aweme),
-                    isAiPost(aweme),
-                    isLongPost(aweme),
-                    isMetricOutOfRange(aweme),
-                    matchesKeywordBlacklist(aweme)
-            );
+            boolean remove;
+            if (aweme != null) {
+                Object cached = XposedHelpers.getAdditionalInstanceField(aweme, FILTER_REMOVE_KEY);
+                if (cached instanceof Boolean) {
+                    remove = (Boolean) cached;
+                } else {
+                    remove = FeedFilterPolicy.shouldRemove(
+                            config.hideFeedAds,
+                            config.hideLive,
+                            config.hideSuggested,
+                            config.hidePhotoPosts,
+                            config.hideAiPosts,
+                            config.hideLongPosts,
+                            config.filterMetrics,
+                            isAdItem(item) || isAdItem(aweme),
+                            isLiveItem(item) || isLiveItem(aweme),
+                            isSuggestedAcquaintance(aweme),
+                            isPhotoPost(aweme),
+                            isAiPost(aweme),
+                            isLongPost(aweme),
+                            isMetricOutOfRange(aweme),
+                            matchesKeywordBlacklist(aweme)
+                    );
+                    try {
+                        XposedHelpers.setAdditionalInstanceField(aweme, FILTER_REMOVE_KEY, remove);
+                    } catch (Throwable ignored) {
+                    }
+                }
+            } else {
+                remove = FeedFilterPolicy.shouldRemove(
+                        config.hideFeedAds,
+                        config.hideLive,
+                        config.hideSuggested,
+                        false, false, false, false,
+                        isAdItem(item),
+                        isLiveItem(item),
+                        false, false, false, false, false, false
+                );
+            }
             if (remove) {
                 if (filtered == null) {
                     filtered = new ArrayList<>(Math.max(0, items.size() - 1));
