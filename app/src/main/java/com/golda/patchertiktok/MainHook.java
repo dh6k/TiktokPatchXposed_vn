@@ -162,6 +162,7 @@ public class MainHook implements IXposedHookLoadPackage {
         if (config.anyPurificationEnabled()) {
             installPurification(lpparam.classLoader);
             installTakoAndRewardServiceHooks(lpparam.classLoader);
+            installObfuscatedTakoHooks(lpparam.classLoader);
         }
         if (PlaybackSpeedPolicy.shouldApply(config.playbackSpeedEnabled, config.playbackSpeed)) {
             installPlaybackSpeed(lpparam.classLoader);
@@ -307,6 +308,164 @@ public class MainHook implements IXposedHookLoadPackage {
         }
 
         XposedBridge.log(TAG + ": tako/reward service hooks=" + hooks);
+    }
+
+    /** Obfuscated 47.0.3 Tako feed-right factories (string xref). */
+    private void installObfuscatedTakoHooks(ClassLoader classLoader) {
+        int hooks = 0;
+        // Factories / gate flags
+        hooks += hookBooleanMethods(classLoader, "X.05ik", false);
+        hooks += hookBooleanMethods(classLoader, "X.05XR", false);
+        hooks += hookBooleanMethods(classLoader, "X.0Qyg", false);
+        hooks += hookBooleanMethods(classLoader, "X.0B9m", false);
+
+        // TakoAssem: hide every ImageView/View field after any instance method.
+        Class<?> takoAssem = XposedHelpers.findClassIfExists(
+                "com.ss.android.ugc.aweme.feed.assem.tikbot.TakoAssem", classLoader);
+        if (takoAssem != null) {
+            for (Method method : takoAssem.getDeclaredMethods()) {
+                if (Modifier.isAbstract(method.getModifiers())) continue;
+                Class<?> ret = method.getReturnType();
+                if (ret == boolean.class) {
+                    XposedBridge.hookMethod(method, XC_MethodReplacement.returnConstant(false));
+                    hooks++;
+                } else if (ret == void.class || View.class.isAssignableFrom(ret)) {
+                    XposedBridge.hookMethod(method, new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            hideImageViewFields(param.thisObject);
+                            hideViewTreeSafe(param.getResult());
+                        }
+                    });
+                    hooks++;
+                }
+            }
+            XposedBridge.log(TAG + ": TakoAssem hooked methods");
+        } else {
+            XposedBridge.log(TAG + ": TakoAssem class not found by name");
+        }
+
+        // Lambdas that refresh/show the feed-right tako icon.
+        String[] lambdaClasses = {"X.0XGj", "X.0XGl", "X.0XHJ", "X.0XHK"};
+        for (String name : lambdaClasses) {
+            Class<?> cls = XposedHelpers.findClassIfExists(name, classLoader);
+            if (cls == null) continue;
+            for (Method method : cls.getDeclaredMethods()) {
+                if (!method.getName().startsWith("invoke")) continue;
+                if (Modifier.isAbstract(method.getModifiers())) continue;
+                XposedBridge.hookMethod(method, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        hideImageViewFields(param.thisObject);
+                        hideViewTreeSafe(param.getResult());
+                    }
+                });
+                hooks++;
+            }
+        }
+
+        // ImageView/SmartImageView: never stay VISIBLE once tagged as tako/tikbot.
+        try {
+            Class<?> smart = XposedHelpers.findClassIfExists(
+                    "com.bytedance.lighten.loader.SmartImageView", classLoader);
+            Class<?>[] imageClasses = smart == null
+                    ? new Class<?>[]{ImageView.class}
+                    : new Class<?>[]{ImageView.class, smart};
+            for (Class<?> imageClass : imageClasses) {
+                XposedHelpers.findAndHookMethod(imageClass, "setVisibility",
+                        int.class, new XC_MethodHook() {
+                            @Override
+                            protected void beforeHookedMethod(MethodHookParam param) {
+                                Object view = param.thisObject;
+                                if (!(view instanceof View)) return;
+                                if (shouldHideEntranceView((View) view)
+                                        || parentClassMatches(view, "tako", "tikbot")) {
+                                    param.args[0] = View.GONE;
+                                }
+                            }
+                        });
+                hooks++;
+            }
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + " [ImageView visibility] " + t);
+        }
+
+        // Catch-all: TikTok may re-show the icon after bind.
+        try {
+            XposedHelpers.findAndHookMethod(View.class, "setVisibility",
+                    int.class, new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            int requested = (Integer) param.args[0];
+                            if (requested == View.GONE || requested == View.INVISIBLE) return;
+                            Object view = param.thisObject;
+                            if (view instanceof View
+                                    && (shouldHideEntranceView((View) view)
+                                    || parentClassMatches(view, "TakoAssem", "tikbot", "Tako"))) {
+                                param.args[0] = View.GONE;
+                            }
+                        }
+                    });
+            hooks++;
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + " [View.setVisibility] " + t);
+        }
+
+        XposedBridge.log(TAG + ": obfuscated tako hooks=" + hooks);
+    }
+
+    private int hookBooleanMethods(ClassLoader classLoader, String name, boolean value) {
+        try {
+            Class<?> cls = XposedHelpers.findClassIfExists(name, classLoader);
+            if (cls == null) return 0;
+            int count = 0;
+            for (Method method : cls.getDeclaredMethods()) {
+                if (Modifier.isAbstract(method.getModifiers())) continue;
+                if (method.getReturnType() != boolean.class) continue;
+                XposedBridge.hookMethod(method, XC_MethodReplacement.returnConstant(value));
+                count++;
+            }
+            return count;
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + " [bool hook " + name + "] " + t);
+            return 0;
+        }
+    }
+
+    private void hideImageViewFields(Object target) {
+        if (target == null) return;
+        for (Class<?> cls = target.getClass(); cls != null; cls = cls.getSuperclass()) {
+            for (Field field : cls.getDeclaredFields()) {
+                Class<?> type = field.getType();
+                if (!View.class.isAssignableFrom(type)) continue;
+                try {
+                    field.setAccessible(true);
+                    Object value = field.get(target);
+                    if (value instanceof View) {
+                        hideView(value);
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+    }
+
+    private boolean parentClassMatches(Object view, String... hints) {
+        Object current = view;
+        for (int i = 0; i < 6 && current != null; i++) {
+            String name;
+            if (current instanceof View) {
+                name = current.getClass().getName();
+                current = ((View) current).getParent();
+            } else {
+                name = current.getClass().getName();
+                break;
+            }
+            for (String hint : hints) {
+                if (name.contains(hint)) return true;
+            }
+        }
+        return false;
     }
 
     private void hideViewTreeSafe(Object value) {
