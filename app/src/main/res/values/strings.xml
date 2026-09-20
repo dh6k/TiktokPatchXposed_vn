@@ -1,4 +1,4 @@
 <resources>
     <string name="app_name">TiktokPatchXposed</string>
-    <string name="module_description">TikTok patcher with Vietnam region, clean feed and settings menu</string>
+    <string name="module_description">TikTok patcher: Vietnam region, clean feed, hide Tako/reward entrances</string>
 </resources>

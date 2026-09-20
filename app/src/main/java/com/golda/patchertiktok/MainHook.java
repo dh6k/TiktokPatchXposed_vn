@@ -2,18 +2,14 @@ package com.golda.patchertiktok;
 
 import android.app.Activity;
 import android.app.Application;
-import android.content.BroadcastReceiver;
 import android.content.Context;
-import android.content.Intent;
-import android.content.IntentFilter;
-import android.os.Build;
 import android.os.SystemClock;
-import android.os.Bundle;
 import android.telephony.TelephonyManager;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewTreeObserver;
 import android.widget.ImageView;
 
 import java.lang.reflect.Field;
@@ -105,57 +101,24 @@ public class MainHook implements IXposedHookLoadPackage {
     public void handleLoadPackage(final XC_LoadPackage.LoadPackageParam lpparam) {
         if (!PKG_TIKTOK_1.equals(lpparam.packageName) && !PKG_TIKTOK_2.equals(lpparam.packageName)) return;
         XposedBridge.log(TAG + ": loaded for " + lpparam.packageName);
+        if (!installed.compareAndSet(false, true)) return;
 
+        config = ModuleConfig.defaults();
+        XposedBridge.log(TAG + ": config " + config);
         final boolean isMainProcess = lpparam.packageName.equals(lpparam.processName);
         try {
             Method attach = Application.class.getDeclaredMethod("attach", Context.class);
             XposedBridge.hookMethod(attach, new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
-                    if (!installed.compareAndSet(false, true)) return;
                     Context context = (Context) param.args[0];
-                    config = ModuleConfig.load(context);
-                    XposedBridge.log(TAG + ": config source=" + ModuleConfig.lastLoadSource
-                            + " " + config);
-                    registerConfigReceiver(context);
-                    installConfiguredHooks(lpparam, isMainProcess);
+                    installEntranceHider(context);
                 }
             });
         } catch (Throwable t) {
             XposedBridge.log(TAG + " [attach hook] " + t);
-            if (installed.compareAndSet(false, true)) {
-                config = ModuleConfig.defaults();
-                installConfiguredHooks(lpparam, isMainProcess);
-            }
         }
-    }
-
-    private void registerConfigReceiver(Context context) {
-        try {
-            BroadcastReceiver receiver = new BroadcastReceiver() {
-                @Override
-                public void onReceive(Context receiverContext, Intent intent) {
-                    if (intent == null) return;
-                    Bundle bundle = intent.getBundleExtra(ModuleConfig.EXTRA_CONFIG);
-                    if (bundle == null) return;
-                    ModuleConfig incoming = ModuleConfig.fromBundle(bundle);
-                    // Live-apply for feed filters that read the static config field.
-                    config = incoming;
-                    ModuleConfig.saveRuntime(receiverContext, bundle);
-                    XposedBridge.log(TAG + ": config broadcast applied live + saved runtime prefs: "
-                            + incoming);
-                }
-            };
-            IntentFilter filter = new IntentFilter(ModuleConfig.ACTION_CONFIG);
-            if (Build.VERSION.SDK_INT >= 33) {
-                context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED);
-            } else {
-                context.registerReceiver(receiver, filter);
-            }
-            XposedBridge.log(TAG + ": config broadcast receiver registered");
-        } catch (Throwable t) {
-            XposedBridge.log(TAG + " [config receiver] " + t);
-        }
+        installConfiguredHooks(lpparam, isMainProcess);
     }
 
     private void installConfiguredHooks(
@@ -198,10 +161,158 @@ public class MainHook implements IXposedHookLoadPackage {
         }
         if (config.anyPurificationEnabled()) {
             installPurification(lpparam.classLoader);
+            installTakoAndRewardServiceHooks(lpparam.classLoader);
         }
         if (PlaybackSpeedPolicy.shouldApply(config.playbackSpeedEnabled, config.playbackSpeed)) {
             installPlaybackSpeed(lpparam.classLoader);
         }
+    }
+
+    private static final String[] ENTRANCE_CLASS_HINTS = {
+            "tako", "tikbot", "incentive", "touchpoint", "reward", "coin",
+            "taskcenter", "earncoin", "cash_event"
+    };
+
+    private static final String[] ENTRANCE_RESOURCE_HINTS = {
+            "tako", "tikbot", "incentive", "reward", "coin", "earn",
+            "task_icon", "task_center", "tap_to", "cash", "diamond"
+    };
+
+    private void installTakoAndRewardServiceHooks(ClassLoader classLoader) {
+        String[] serviceClasses = {
+                "com.ss.android.ugc.aweme.tako.TakoServiceImpl",
+                "com.ss.android.ugc.aweme.tako.TakoFeedIconServiceImpl",
+                "com.ss.android.ugc.aweme.tako.ITakoFeedIconService",
+                "com.ss.android.ugc.aweme.tako.ITakoService",
+                "com.ss.android.ugc.aweme.tako.ITakoLaunchService",
+                "com.bytedance.touchpoint.IncentiveServiceImpl",
+                "com.bytedance.touchpoint.serviceimp.IncentiveBottomTabServiceImpl",
+                "com.bytedance.touchpoint.api.downgrade.DowngradeIncentiveServiceImpl",
+                "com.ss.android.ugc.aweme.sidebar.IncentiveSideBarComponent",
+                "com.bytedance.touchpoint.core.pendant.base.BaseTimerPendantManager",
+                "com.bytedance.touchpoint.core.pendant.feed.FeedTimerPendantManger",
+                "com.ss.android.ugc.aweme.specact.IncentiveSparkServiceImpl"
+        };
+        int hooks = 0;
+        for (String className : serviceClasses) {
+            try {
+                Class<?> cls = XposedHelpers.findClassIfExists(className, classLoader);
+                if (cls == null) continue;
+                for (Method method : cls.getDeclaredMethods()) {
+                    Class<?>[] params = method.getParameterTypes();
+                    Class<?> ret = method.getReturnType();
+                    String name = method.getName().toLowerCase(Locale.ROOT);
+                    boolean nameLooksUi = name.contains("show")
+                            || name.contains("enable")
+                            || name.contains("visible")
+                            || name.contains("entrance")
+                            || name.contains("icon")
+                            || name.contains("pendant")
+                            || name.contains("guide")
+                            || name.startsWith("liz");
+                    if (ret == boolean.class && params.length <= 2 && nameLooksUi) {
+                        XposedBridge.hookMethod(method, XC_MethodReplacement.returnConstant(false));
+                        hooks++;
+                    } else if (ret == void.class
+                            && params.length == 1
+                            && (params[0] == boolean.class || View.class.isAssignableFrom(params[0]))) {
+                        XposedBridge.hookMethod(method, new XC_MethodHook() {
+                            @Override
+                            protected void beforeHookedMethod(MethodHookParam param) {
+                                if (param.args.length == 1 && param.args[0] instanceof Boolean) {
+                                    param.args[0] = Boolean.FALSE;
+                                } else {
+                                    hideView(param.args[0]);
+                                }
+                            }
+                        });
+                        hooks++;
+                    }
+                }
+            } catch (Throwable t) {
+                XposedBridge.log(TAG + " [entrance service " + className + "] " + t);
+            }
+        }
+        XposedBridge.log(TAG + ": tako/reward service hooks=" + hooks);
+    }
+
+    private void installEntranceHider(Context context) {
+        if (context == null) return;
+        try {
+            XposedHelpers.findAndHookMethod(
+                    Activity.class,
+                    "onResume",
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            Object activity = param.thisObject;
+                            if (!(activity instanceof Activity)) return;
+                            View decor = ((Activity) activity).getWindow() == null
+                                    ? null
+                                    : ((Activity) activity).getWindow().getDecorView();
+                            if (decor != null) {
+                                decor.getViewTreeObserver().addOnGlobalLayoutListener(
+                                        new ViewTreeObserver.OnGlobalLayoutListener() {
+                                            @Override
+                                            public void onGlobalLayout() {
+                                                hideEntranceViews(decor);
+                                            }
+                                        });
+                                hideEntranceViews(decor);
+                            }
+                        }
+                    });
+            XposedBridge.log(TAG + ": tako/reward entrance layout hooks installed");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + " [entrance hider] " + t);
+        }
+    }
+
+    private void hideEntranceViews(View root) {
+        if (root == null) return;
+        try {
+            if (shouldHideEntranceView(root)) {
+                hideView(root);
+                return;
+            }
+            if (!(root instanceof ViewGroup)) return;
+            ViewGroup group = (ViewGroup) root;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                hideEntranceViews(group.getChildAt(i));
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private boolean shouldHideEntranceView(View view) {
+        if (view == null) return false;
+        String className = view.getClass().getName().toLowerCase(Locale.ROOT);
+        for (String hint : ENTRANCE_CLASS_HINTS) {
+            if (className.contains(hint)) {
+                // Avoid wiping entire incentive page containers that are not icons.
+                if (className.contains("fragment") || className.contains("activity")) continue;
+                return true;
+            }
+        }
+        int id = view.getId();
+        if (id != View.NO_ID) {
+            try {
+                String entry = view.getResources().getResourceEntryName(id).toLowerCase(Locale.ROOT);
+                for (String hint : ENTRANCE_RESOURCE_HINTS) {
+                    if (entry.contains(hint)) return true;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        CharSequence content = view.getContentDescription();
+        if (content != null) {
+            String desc = content.toString().toLowerCase(Locale.ROOT);
+            if (desc.contains("tako") || desc.contains("reward") || desc.contains("incentive")
+                    || desc.contains("coin") || desc.contains("earn")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void installDownloadPatches(XC_LoadPackage.LoadPackageParam lpparam) {
@@ -263,6 +374,17 @@ public class MainHook implements IXposedHookLoadPackage {
         if (config.hideSearch && lower.contains("search")) return true;
         if (config.hideBottomNav && (lower.contains("tab_") || lower.contains("bottom_nav")
                 || lower.contains("main_tab"))) return true;
+        if (config.hideTakoIcon) {
+            for (String hint : new String[]{"tako", "tikbot", "ai_bot"}) {
+                if (lower.contains(hint)) return true;
+            }
+        }
+        if (config.hideRewardEntrance) {
+            for (String hint : new String[]{"incentive", "reward", "coin_task", "earn",
+                    "tap_to_earn", "task_icon", "cash_reward"}) {
+                if (lower.contains(hint)) return true;
+            }
+        }
         return false;
     }
 
