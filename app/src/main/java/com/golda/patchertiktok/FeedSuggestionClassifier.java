@@ -25,6 +25,12 @@ final class FeedSuggestionClassifier {
                 || normalized.contains("people you may know")
                 || normalized.contains("may_know")
                 || normalized.contains("acquaint")
+                || normalized.contains("người bạn có thể biết")
+                || normalized.contains("nguoi ban co the biet")
+                || normalized.contains("người quen có thể biết")
+                || normalized.contains("nguoi quen co the biet")
+                || normalized.contains("có thể biết")
+                || normalized.contains("co the biet")
                 || (normalized.contains("вероятн") && normalized.contains("знаком"))
                 || (normalized.contains("возможн") && normalized.contains("знаком"))
                 || (normalized.contains("personen") && normalized.contains("kennen"));

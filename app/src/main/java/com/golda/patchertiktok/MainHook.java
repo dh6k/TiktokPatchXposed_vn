@@ -1,10 +1,14 @@
 package com.golda.patchertiktok;
 
 import android.app.Activity;
+import android.app.Application;
+import android.content.Context;
 import android.os.SystemClock;
 import android.telephony.TelephonyManager;
+import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.ImageView;
 
 import java.lang.reflect.Field;
@@ -15,6 +19,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -69,11 +75,16 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private static final String AWEME_CLASS =
             "com.ss.android.ugc.aweme.feed.model.Aweme";
+    // 47.0.3: X.06nl / X.06nm HomeSeekBarControl; older: X.06XH / X.1BSr
     private static final String[] SEEKBAR_CONTROLLER_CANDIDATES = {
+            "X.06nl",
+            "X.06nm",
             "X.06XH",
             "X.1BSr"
     };
+    // 47.0.3: X.06l9 has setSeekBarShowType
     private static final String[] SEEKBAR_VIEW_CANDIDATES = {
+            "X.06l9",
             "X.06W4",
             "X.17kt"
     };
@@ -82,37 +93,208 @@ public class MainHook implements IXposedHookLoadPackage {
             "LIZLLL"
     };
 
+    private static volatile ModuleConfig config = ModuleConfig.defaults();
+    private static final AtomicBoolean installed = new AtomicBoolean(false);
 
     @Override
     public void handleLoadPackage(final XC_LoadPackage.LoadPackageParam lpparam) {
         if (!PKG_TIKTOK_1.equals(lpparam.packageName) && !PKG_TIKTOK_2.equals(lpparam.packageName)) return;
         XposedBridge.log(TAG + ": loaded for " + lpparam.packageName);
 
-        boolean isMainProcess = lpparam.packageName.equals(lpparam.processName);
-        if (isMainProcess) {
-            installVideoPatches(lpparam);
-            installSafeFeedFilter(lpparam);
-            installRenderedAdSkip(lpparam.classLoader);
-            installStartupAdBlocker(lpparam.classLoader);
-            installTopLiveButtonPatch(lpparam.classLoader);
-        }
-        installVietnamRegionSpoof();
-        installVietnameseRecommendationLanguage(lpparam.classLoader);
-        installRecommendationFeedRegionOverride(lpparam.classLoader);
-        if (isMainProcess) {
-            installGoogleLoginFix(lpparam);
+        final boolean isMainProcess = lpparam.packageName.equals(lpparam.processName);
+        try {
+            Method attach = Application.class.getDeclaredMethod("attach", Context.class);
+            XposedBridge.hookMethod(attach, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    if (!installed.compareAndSet(false, true)) return;
+                    Context context = (Context) param.args[0];
+                    config = ModuleConfig.loadFromProvider(context);
+                    XposedBridge.log(TAG + ": config " + config);
+                    installConfiguredHooks(lpparam, isMainProcess);
+                }
+            });
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + " [attach hook] " + t);
+            if (installed.compareAndSet(false, true)) {
+                config = ModuleConfig.defaults();
+                installConfiguredHooks(lpparam, isMainProcess);
+            }
         }
     }
 
-    private void installVideoPatches(XC_LoadPackage.LoadPackageParam lpparam) {
+    private void installConfiguredHooks(
+            final XC_LoadPackage.LoadPackageParam lpparam,
+            boolean isMainProcess
+    ) {
+        if (config.vietnamRegion || config.vietnameseLanguage) {
+            installVietnamRegionSpoof();
+        }
+        if (config.vietnameseLanguage) {
+            installVietnameseRecommendationLanguage(lpparam.classLoader);
+        }
+        if (config.feedRegionOverride) {
+            installRecommendationFeedRegionOverride(lpparam.classLoader);
+        }
+        if (!isMainProcess) {
+            return;
+        }
+
+        if (config.downloadNoWatermark) {
+            installDownloadPatches(lpparam);
+        }
+        if (config.forceSeekbar) {
+            installSeekbarPatch(lpparam.classLoader);
+        }
+        if (config.anyFeedFilterEnabled()) {
+            installSafeFeedFilter(lpparam);
+        }
+        if (config.hideFeedAds) {
+            installRenderedAdSkip(lpparam.classLoader);
+        }
+        if (config.hideSplashAds) {
+            installStartupAdBlocker(lpparam.classLoader);
+        }
+        if (config.hideLive) {
+            installTopLiveButtonPatch(lpparam.classLoader);
+        }
+        if (config.googleLoginFix) {
+            installGoogleLoginFix(lpparam);
+        }
+        if (config.anyPurificationEnabled()) {
+            installPurification(lpparam.classLoader);
+        }
+        if (PlaybackSpeedPolicy.shouldApply(config.playbackSpeedEnabled, config.playbackSpeed)) {
+            installPlaybackSpeed(lpparam.classLoader);
+        }
+    }
+
+    private void installDownloadPatches(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
             hookReturnConst("com.ss.android.ugc.aweme.feed.model.ACLCommonShare", lpparam.classLoader, "getCode", 0);
             hookReturnConst("com.ss.android.ugc.aweme.feed.model.ACLCommonShare", lpparam.classLoader, "getShowType", 2);
             hookReturnConst("com.ss.android.ugc.aweme.feed.model.ACLCommonShare", lpparam.classLoader, "getTranscode", 1);
-            installSeekbarPatch(lpparam.classLoader);
             XposedBridge.log(TAG + ": download patches installed");
         } catch (Throwable t) {
             XposedBridge.log(TAG + " [video patches] " + t);
+        }
+    }
+
+    private void installPurification(ClassLoader classLoader) {
+        try {
+            XposedHelpers.findAndHookMethod(
+                    LayoutInflater.class,
+                    "inflate",
+                    int.class,
+                    ViewGroup.class,
+                    boolean.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            Object result = param.getResult();
+                            if (!(result instanceof View)) return;
+                            int resId = (Integer) param.args[0];
+                            String name = resourceName(((View) result).getResources(), resId);
+                            if (name != null && shouldPurifyResource(name)) {
+                                hideViewTree((View) result);
+                            }
+                        }
+                    });
+            XposedBridge.log(TAG + ": purification hooks installed");
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + " [purification] " + t);
+        }
+    }
+
+    private static String resourceName(android.content.res.Resources resources, int resId) {
+        try {
+            return resources.getResourceEntryName(resId);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private boolean shouldPurifyResource(String name) {
+        String lower = name.toLowerCase(Locale.ROOT);
+        if (config.hideAuthorAvatar && (lower.contains("avatar") || lower.contains("head_image"))) return true;
+        if (config.hideAuthorInfo && (lower.contains("author_name") || lower.contains("nickname")
+                || lower.contains("user_name"))) return true;
+        if (config.hideVideoDesc && (lower.contains("desc") || lower.contains("caption"))) return true;
+        if (config.hideMusicTitle && lower.contains("music")) return true;
+        if (config.hideActionButtons && (lower.contains("like") || lower.contains("comment")
+                || lower.contains("share") || lower.contains("collect") || lower.contains("favorite"))) return true;
+        if (config.hideTopNav && (lower.contains("following") || lower.contains("for_you")
+                || lower.contains("top_tab"))) return true;
+        if (config.hideSearch && lower.contains("search")) return true;
+        if (config.hideBottomNav && (lower.contains("tab_") || lower.contains("bottom_nav")
+                || lower.contains("main_tab"))) return true;
+        return false;
+    }
+
+    private void hideViewTree(View view) {
+        hideView(view);
+        if (!(view instanceof ViewGroup)) return;
+        ViewGroup group = (ViewGroup) view;
+        for (int i = 0; i < group.getChildCount(); i++) {
+            hideViewTree(group.getChildAt(i));
+        }
+    }
+
+    private void installPlaybackSpeed(ClassLoader classLoader) {
+        try {
+            final float speed = PlaybackSpeedPolicy.clamp(config.playbackSpeed);
+            int hooks = 0;
+            String[] candidateClasses = {
+                    "com.ss.android.ugc.aweme.feed.controller.PlayerController",
+                    "com.ss.android.ugc.aweme.feed.controller.I18nPlayerController",
+                    "X.037l"
+            };
+            for (String raw : candidateClasses) {
+                String name = raw.startsWith("X.")
+                        ? "X/" + raw.substring(2)
+                        : raw;
+                Class<?> cls = XposedHelpers.findClassIfExists(name, classLoader);
+                if (cls == null) {
+                    cls = XposedHelpers.findClassIfExists(raw, classLoader);
+                }
+                if (cls == null) continue;
+                for (Method method : cls.getDeclaredMethods()) {
+                    Class<?>[] params = method.getParameterTypes();
+                    String methodName = method.getName().toLowerCase(Locale.ROOT);
+                    boolean speedNamed = methodName.contains("speed")
+                            || methodName.contains("rate")
+                            || "setspeed".equals(methodName)
+                            || "setrate".equals(methodName);
+                    if (!speedNamed) continue;
+                    if (params.length == 1
+                            && (params[0] == float.class || params[0] == Float.class)) {
+                        XposedBridge.hookMethod(method, new XC_MethodHook() {
+                            @Override
+                            protected void beforeHookedMethod(MethodHookParam param) {
+                                if (param.args.length > 0 && param.args[0] instanceof Number) {
+                                    param.args[0] = speed;
+                                }
+                            }
+                        });
+                        hooks++;
+                    } else if (params.length == 2
+                            && params[0] == String.class
+                            && (params[1] == float.class || params[1] == Float.class)) {
+                        XposedBridge.hookMethod(method, new XC_MethodHook() {
+                            @Override
+                            protected void beforeHookedMethod(MethodHookParam param) {
+                                if (param.args.length > 1 && param.args[1] instanceof Number) {
+                                    param.args[1] = speed;
+                                }
+                            }
+                        });
+                        hooks++;
+                    }
+                }
+            }
+            XposedBridge.log(TAG + ": playback speed hooks=" + hooks + " speed=" + speed);
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + " [playback speed] " + t);
         }
     }
 
@@ -328,7 +510,9 @@ public class MainHook implements IXposedHookLoadPackage {
     private void installStartupAdBlocker(ClassLoader classLoader) {
         final String serviceClassName =
                 "com.bytedance.ies.ugc.aweme.commercialize.splash.core.SplashAdServiceImpl";
-        final String[] enabledMethodCandidates = {"LJIILIIL", "LJIILL"};
+        final String[] enabledMethodCandidates = {
+                "LJIILIIL", "LJIILL", "LJFF", "LJJIJIL"
+        };
         final String[] preloadTaskClasses = {
                 "com.bytedance.ies.ugc.aweme.commercialize.splash.SplashAdManagerPreloadTask",
                 "com.bytedance.ies.ugc.aweme.commercialize.splash.topview.TopViewPreloadTask",
@@ -346,15 +530,23 @@ public class MainHook implements IXposedHookLoadPackage {
                 for (String methodName : enabledMethodCandidates) {
                     for (Method method : serviceClass.getDeclaredMethods()) {
                         if (!methodName.equals(method.getName())
-                                || method.getReturnType() != boolean.class
                                 || method.getParameterTypes().length != 0) {
                             continue;
                         }
-                        XposedBridge.hookMethod(
-                                method,
-                                XC_MethodReplacement.returnConstant(false)
-                        );
-                        serviceHooks++;
+                        Class<?> returnType = method.getReturnType();
+                        if (returnType == boolean.class) {
+                            XposedBridge.hookMethod(
+                                    method,
+                                    XC_MethodReplacement.returnConstant(false)
+                            );
+                            serviceHooks++;
+                        } else if (returnType == void.class) {
+                            XposedBridge.hookMethod(
+                                    method,
+                                    XC_MethodReplacement.returnConstant(null)
+                            );
+                            serviceHooks++;
+                        }
                     }
                 }
 
@@ -591,9 +783,24 @@ public class MainHook implements IXposedHookLoadPackage {
         for (int index = 0; index < items.size(); index++) {
             Object item = items.get(index);
             Object aweme = unwrapAweme(item);
-            boolean adOrLive = shouldRemoveFeedItem(item, aweme);
-            boolean suggestedAcquaintance = isSuggestedAcquaintance(aweme);
-            if (adOrLive || suggestedAcquaintance) {
+            boolean remove = FeedFilterPolicy.shouldRemove(
+                    config.hideFeedAds,
+                    config.hideLive,
+                    config.hideSuggested,
+                    config.hidePhotoPosts,
+                    config.hideAiPosts,
+                    config.hideLongPosts,
+                    config.filterMetrics,
+                    isAdItem(item) || isAdItem(aweme),
+                    isLiveItem(item) || isLiveItem(aweme),
+                    isSuggestedAcquaintance(aweme),
+                    isPhotoPost(aweme),
+                    isAiPost(aweme),
+                    isLongPost(aweme),
+                    isMetricOutOfRange(aweme),
+                    matchesKeywordBlacklist(aweme)
+            );
+            if (remove) {
                 if (filtered == null) {
                     filtered = new ArrayList<>(Math.max(0, items.size() - 1));
                     for (int previous = 0; previous < index; previous++) {
@@ -611,10 +818,92 @@ public class MainHook implements IXposedHookLoadPackage {
         return items;
     }
 
-    private boolean shouldRemoveFeedItem(Object item, Object aweme) {
-        return isAdItem(item) || isAdItem(aweme) || isLiveItem(item) || isLiveItem(aweme);
+    private boolean isPhotoPost(Object aweme) {
+        if (aweme == null) return false;
+        Object awemeType = callNoArg(aweme, "getAwemeType");
+        if (awemeType instanceof Number && ((Number) awemeType).intValue() == 150) return true;
+        return callNoArg(aweme, "getPhotoModeImageInfo") != null
+                || callNoArg(aweme, "getPhotoModeTextInfo") != null;
     }
 
+    private boolean isAiPost(Object aweme) {
+        if (aweme == null) return false;
+        return callBooleanNoArg(aweme, "isAigc")
+                || callBooleanNoArg(aweme, "isAIGC")
+                || callBooleanNoArg(aweme, "isAiGenerated")
+                || callBooleanNoArg(aweme, "isAIGCContent")
+                || callNoArg(aweme, "getAigcInfo") != null
+                || callNoArg(aweme, "getAigcInfoModel") != null
+                || hasPositiveOrObjectField(aweme, "aigcInfo")
+                || hasPositiveOrObjectField(aweme, "aigcInfoModel")
+                || hasPositiveOrObjectField(aweme, "moderationAigcInfo");
+    }
+
+    private boolean isLongPost(Object aweme) {
+        if (aweme == null || !config.hideLongPosts) return false;
+        Integer durationMs = getDurationMs(aweme);
+        return FeedFilterPolicy.isLongVideo(durationMs, config.longPostSeconds);
+    }
+
+    private Integer getDurationMs(Object aweme) {
+        Object video = callNoArg(aweme, "getVideo");
+        if (video == null) return null;
+        Object length = findFieldValue(video, "videoLength");
+        if (length instanceof Number) return ((Number) length).intValue();
+        length = findFieldValue(video, "duration");
+        if (length instanceof Number) return ((Number) length).intValue();
+        length = callNoArg(video, "getDuration");
+        if (length instanceof Number) return ((Number) length).intValue();
+        return null;
+    }
+
+    private boolean isMetricOutOfRange(Object aweme) {
+        if (aweme == null || !config.filterMetrics) return false;
+        Object stats = callNoArg(aweme, "getStatistics");
+        if (stats == null) stats = findFieldValue(aweme, "statistics");
+        Long playCount = readLong(stats, aweme, "playCount", "getPlayCount");
+        Long diggCount = readLong(stats, aweme, "diggCount", "getDiggCount");
+        return FeedFilterPolicy.shouldRemoveByMetrics(
+                playCount,
+                diggCount,
+                true,
+                config.viewsMin,
+                config.viewsMax,
+                config.likesMin,
+                config.likesMax
+        );
+    }
+
+    private Long readLong(Object primary, Object fallback, String fieldName, String getter) {
+        Object value = findFieldValue(primary, fieldName);
+        if (value == null) value = callNoArg(primary, getter);
+        if (value == null) value = findFieldValue(fallback, fieldName);
+        if (value == null) value = callNoArg(fallback, getter);
+        return value instanceof Number ? ((Number) value).longValue() : null;
+    }
+
+    private boolean matchesKeywordBlacklist(Object aweme) {
+        if (aweme == null || config.keywordBlacklist.isEmpty()) return false;
+        Set<String> keywords = config.keywordBlacklist;
+        Object desc = callNoArg(aweme, "getDesc");
+        if (desc == null) desc = findFieldValue(aweme, "desc");
+        if (FeedFilterPolicy.matchesKeyword(desc == null ? null : String.valueOf(desc), keywords)) {
+            return true;
+        }
+        Object hashtags = callNoArg(aweme, "getHashtags");
+        if (hashtags instanceof List<?>) {
+            for (Object tag : (List<?>) hashtags) {
+                Object text = callNoArg(tag, "getHashtagName");
+                if (text == null) text = callNoArg(tag, "getChallengeName");
+                if (text == null) text = findFieldValue(tag, "hashtagName");
+                if (text == null) text = findFieldValue(tag, "challengeName");
+                if (FeedFilterPolicy.matchesKeyword(text == null ? null : String.valueOf(text), keywords)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
 
     private boolean isSuggestedAcquaintance(Object aweme) {
         if (aweme == null) return false;
@@ -829,7 +1118,9 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private Method findCurrentAwemeMethod(Class<?> panelClass) {
         String awemeClassName = "com.ss.android.ugc.aweme.feed.model.Aweme";
-        String[] preferredNames = {"getCurrentAweme", "LJII", "LJIIIIZZ", "QP"};
+        String[] preferredNames = {
+                "getCurrentAweme", "LJII", "LJIIIIZZ", "QP", "vQ", "LLLZIL"
+        };
         for (String preferredName : preferredNames) {
             for (Method method : panelClass.getDeclaredMethods()) {
                 if (preferredName.equals(method.getName())
@@ -1129,27 +1420,16 @@ public class MainHook implements IXposedHookLoadPackage {
     private void rewriteRecommendationFeedRegion(Object requestContext) {
         if (requestContext == null) return;
         try {
-            Object request = findFieldValue(requestContext, "LIZ");
-            if (request == null) {
-                request = findFieldValueByTypeName(
-                        requestContext,
-                        "com.bytedance.retrofit2.client.Request"
-                );
-            }
+            Object request = findRequestObject(requestContext);
             if (request == null) return;
 
-            Object parsedUrl = findFieldValue(requestContext, "LIZJ");
             Object urlValue = callNoArg(request, "getUrl");
-            if (!(urlValue instanceof String) && parsedUrl != null) {
-                urlValue = parsedUrl.toString();
-            }
             if (!(urlValue instanceof String)
                     || !isRecommendationFeedUrl((String) urlValue)) {
                 return;
             }
 
-            if (parsedUrl == null) parsedUrl = findParsedFeedUrl(requestContext);
-            Map<Object, Object> query = findQueryMap(parsedUrl);
+            Map<Object, Object> query = findQueryMapFromRequestContext(requestContext, request);
             if (query == null) {
                 XposedBridge.log(TAG + ": recommendation feed query map not found");
                 return;
@@ -1161,6 +1441,65 @@ public class MainHook implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             XposedBridge.log(TAG + " [recommendation feed rewrite] " + t);
         }
+    }
+
+    private Object findRequestObject(Object requestContext) {
+        Object typed = findFieldValueByTypeName(
+                requestContext,
+                "com.bytedance.retrofit2.client.Request"
+        );
+        if (typed != null) return typed;
+        for (String fieldName : new String[]{"LIZ", "LIZJ", "request"}) {
+            Object value = findFieldValue(requestContext, fieldName);
+            if (value != null && callNoArg(value, "getUrl") != null) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private Map<Object, Object> findQueryMapFromRequestContext(Object requestContext, Object request) {
+        for (String fieldName : new String[]{"LIZ", "LIZJ", "LJI", "LJFF"}) {
+            Object candidate = findFieldValue(requestContext, fieldName);
+            Map<Object, Object> map = findQueryLikeMapDeep(candidate, 2);
+            if (map != null) return map;
+        }
+        Map<Object, Object> fromContext = findQueryLikeMapDeep(requestContext, 2);
+        if (fromContext != null) return fromContext;
+        return findQueryLikeMapDeep(request, 2);
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<Object, Object> findQueryLikeMapDeep(Object target, int depth) {
+        if (target == null || depth < 0) return null;
+        if (target instanceof Map<?, ?>) {
+            Map<Object, Object> map = (Map<Object, Object>) target;
+            if (looksLikeUrlQuery(map)) return map;
+        }
+
+        Map<Object, Object> direct = findMapField(target);
+        if (direct != null && looksLikeUrlQuery(direct)) return direct;
+
+        for (Class<?> cls = target.getClass(); cls != null; cls = cls.getSuperclass()) {
+            for (Field field : cls.getDeclaredFields()) {
+                Class<?> fieldType = field.getType();
+                if (fieldType.isPrimitive() || fieldType == String.class) continue;
+                try {
+                    field.setAccessible(true);
+                    Object value = field.get(target);
+                    if (value == null) continue;
+                    if (value instanceof Map<?, ?>) {
+                        Map<Object, Object> map = (Map<Object, Object>) value;
+                        if (looksLikeUrlQuery(map)) return map;
+                    } else if (depth > 0) {
+                        Map<Object, Object> nested = findQueryLikeMapDeep(value, depth - 1);
+                        if (nested != null) return nested;
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+        return null;
     }
 
     private boolean isRecommendationFeedUrl(String url) {
@@ -1176,47 +1515,6 @@ public class MainHook implements IXposedHookLoadPackage {
                 try {
                     field.setAccessible(true);
                     return field.get(target);
-                } catch (Throwable ignored) {
-                }
-            }
-        }
-        return null;
-    }
-
-    private Object findParsedFeedUrl(Object requestContext) {
-        for (Class<?> cls = requestContext.getClass(); cls != null; cls = cls.getSuperclass()) {
-            for (Field field : cls.getDeclaredFields()) {
-                if (field.getType().isPrimitive()
-                        || field.getType() == String.class
-                        || "com.bytedance.retrofit2.client.Request".equals(
-                        field.getType().getName())) {
-                    continue;
-                }
-                try {
-                    field.setAccessible(true);
-                    Object value = field.get(requestContext);
-                    if (value != null && isRecommendationFeedUrl(value.toString())) return value;
-                } catch (Throwable ignored) {
-                }
-            }
-        }
-        return null;
-    }
-
-    @SuppressWarnings("unchecked")
-    private Map<Object, Object> findQueryMap(Object parsedUrl) {
-        if (parsedUrl == null) return null;
-        Object queryObject = findFieldValue(parsedUrl, "LJI");
-        Map<Object, Object> exact = findMapField(queryObject);
-        if (exact != null) return exact;
-
-        for (Class<?> cls = parsedUrl.getClass(); cls != null; cls = cls.getSuperclass()) {
-            for (Field field : cls.getDeclaredFields()) {
-                if (field.getType().isPrimitive() || field.getType() == String.class) continue;
-                try {
-                    field.setAccessible(true);
-                    Map<Object, Object> candidate = findMapField(field.get(parsedUrl));
-                    if (looksLikeUrlQuery(candidate)) return candidate;
                 } catch (Throwable ignored) {
                 }
             }
@@ -1267,9 +1565,34 @@ public class MainHook implements IXposedHookLoadPackage {
         try {
             forceBooleanNoArgMethods("com.bytedance.lobby.google.GoogleAuth", lpparam.classLoader, false);
             forceBooleanNoArgMethods("com.bytedance.lobby.google.GoogleOneTapAuth", lpparam.classLoader, false);
+            hookBooleanMethodByName(
+                    "com.ss.android.ugc.aweme.account.login.googleonetap.GoogleOneTapService",
+                    lpparam.classLoader,
+                    "LIZJ",
+                    false
+            );
             XposedBridge.log(TAG + ": Google login fix installed");
         } catch (Throwable t) {
             XposedBridge.log(TAG + " [google login fix] " + t);
+        }
+    }
+
+    private void hookBooleanMethodByName(String className, ClassLoader cl, String methodName, boolean returnValue) {
+        try {
+            Class<?> cls = XposedHelpers.findClassIfExists(className, cl);
+            if (cls == null) {
+                XposedBridge.log(TAG + ": class not found " + className);
+                return;
+            }
+            for (Method m : cls.getDeclaredMethods()) {
+                if (!methodName.equals(m.getName()) || m.getReturnType() != boolean.class) {
+                    continue;
+                }
+                XposedBridge.hookMethod(m, XC_MethodReplacement.returnConstant(returnValue));
+                XposedBridge.log(TAG + ": hooked " + className + "#" + m.getName() + "() -> " + returnValue);
+            }
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + " [hookBooleanMethodByName " + className + "#" + methodName + "] " + t);
         }
     }
 
