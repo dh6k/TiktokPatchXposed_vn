@@ -1418,34 +1418,74 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private void installRecommendationFeedRegionOverride(ClassLoader classLoader) {
-        final String className = "com.ss.android.ugc.aweme.net.partner.ApiAlisgTTNetHandler";
+        String[] handlerClasses = {
+                "com.ss.android.ugc.aweme.net.partner.ApiAlisgTTNetHandler",
+                "com.ss.android.ugc.aweme.net.partner.CommonParamsTTNetHandler",
+                "com.ss.android.ugc.aweme.net.partner.UrlTransformTTNetHandler",
+                "com.ss.android.ugc.aweme.net.partner.MarkRetrofitHandler",
+                "com.ss.android.ugc.aweme.net.partner.DevicesNullTTNetHandler",
+                "com.ss.android.ugc.aweme.net.partner.SecUidTTNetHandler"
+        };
         try {
-            Class<?> handlerClass = XposedHelpers.findClassIfExists(className, classLoader);
-            if (handlerClass == null) {
-                XposedBridge.log(TAG + ": recommendation feed request handler not found");
-                return;
-            }
-
             int hooks = 0;
-            for (Method method : handlerClass.getDeclaredMethods()) {
-                Class<?>[] params = method.getParameterTypes();
-                if (Modifier.isStatic(method.getModifiers())
-                        || method.getReturnType() != void.class
-                        || params.length != 2
-                        || params[0].isPrimitive()) {
+            for (String className : handlerClasses) {
+                Class<?> handlerClass = XposedHelpers.findClassIfExists(className, classLoader);
+                if (handlerClass == null) {
+                    XposedBridge.log(TAG + ": feed handler missing " + className);
                     continue;
                 }
-
-                XposedBridge.hookMethod(method, new XC_MethodHook() {
-                    @Override
-                    protected void beforeHookedMethod(MethodHookParam param) {
-                        if (param.args.length == 0) return;
-                        rewriteRecommendationFeedRegion(param.args[0]);
+                for (Method method : handlerClass.getDeclaredMethods()) {
+                    Class<?>[] params = method.getParameterTypes();
+                    if (Modifier.isStatic(method.getModifiers())
+                            || method.getReturnType() != void.class
+                            || params.length < 1
+                            || params[0].isPrimitive()) {
+                        continue;
                     }
-                });
-                hooks++;
+                    XposedBridge.hookMethod(method, new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            if (param.args.length == 0) return;
+                            rewriteRecommendationFeedRegion(param.args[0]);
+                        }
+                    });
+                    hooks++;
+                }
             }
-            XposedBridge.log(TAG + ": recommendation feed RU request override installed; hooks="
+
+            // RequestBuilder may bake query into a string builder / url field.
+            Class<?> requestBuilder = XposedHelpers.findClassIfExists(
+                    "com.bytedance.retrofit2.RequestBuilder", classLoader);
+            if (requestBuilder != null) {
+                for (Method method : requestBuilder.getDeclaredMethods()) {
+                    Class<?>[] params = method.getParameterTypes();
+                    String name = method.getName().toLowerCase(Locale.ROOT);
+                    if (!name.contains("url") && !name.contains("query") && !name.contains("param")) {
+                        continue;
+                    }
+                    if (params.length == 0) continue;
+                    XposedBridge.hookMethod(method, new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            for (int i = 0; i < param.args.length; i++) {
+                                Object arg = param.args[i];
+                                if (arg instanceof CharSequence) {
+                                    String value = arg.toString();
+                                    if (FeedRegionRewriter.containsFeedPath(value)) {
+                                        param.args[i] = FeedRegionRewriter.applyOverrides(
+                                                value, RECOMMENDATION_FEED_OVERRIDES);
+                                    }
+                                } else {
+                                    rewriteRecommendationFeedRegion(arg);
+                                }
+                            }
+                        }
+                    });
+                    hooks++;
+                }
+            }
+
+            XposedBridge.log(TAG + ": recommendation feed region override installed; hooks="
                     + hooks);
         } catch (Throwable t) {
             XposedBridge.log(TAG + " [recommendation feed request override] " + t);
@@ -1456,26 +1496,106 @@ public class MainHook implements IXposedHookLoadPackage {
         if (requestContext == null) return;
         try {
             Object request = findRequestObject(requestContext);
-            if (request == null) return;
-
-            Object urlValue = callNoArg(request, "getUrl");
-            if (!(urlValue instanceof String)
-                    || !isRecommendationFeedUrl((String) urlValue)) {
+            String originalUrl = readRequestUrl(request, requestContext);
+            if (originalUrl == null || !FeedRegionRewriter.containsFeedPath(originalUrl)) {
                 return;
             }
+
+            boolean applied = false;
+            String rewritten = FeedRegionRewriter.applyOverrides(
+                    originalUrl, RECOMMENDATION_FEED_OVERRIDES);
+            if (applyRewrittenUrl(request, rewritten)) {
+                applied = true;
+            }
+            applyRewrittenUrl(requestContext, rewritten);
 
             Map<Object, Object> query = findQueryMapFromRequestContext(requestContext, request);
-            if (query == null) {
-                XposedBridge.log(TAG + ": recommendation feed query map not found");
-                return;
+            if (query != null) {
+                for (String[] override : RECOMMENDATION_FEED_OVERRIDES) {
+                    replaceQueryValue(query, override[0], override[1]);
+                }
+                applied = true;
             }
 
-            for (String[] override : RECOMMENDATION_FEED_OVERRIDES) {
-                replaceQueryValue(query, override[0], override[1]);
+            if (!applied) {
+                String preview = originalUrl.length() > 180
+                        ? originalUrl.substring(0, 180)
+                        : originalUrl;
+                XposedBridge.log(TAG + ": recommendation feed query map not found; url=" + preview
+                        + " ctx=" + (requestContext == null ? "null" : requestContext.getClass().getName())
+                        + " req=" + (request == null ? "null" : request.getClass().getName()));
+            } else if (!rewritten.equals(originalUrl)) {
+                XposedBridge.log(TAG + ": recommendation feed region rewritten");
             }
         } catch (Throwable t) {
             XposedBridge.log(TAG + " [recommendation feed rewrite] " + t);
         }
+    }
+
+    private String readRequestUrl(Object request, Object requestContext) {
+        if (request != null) {
+            Object url = callNoArg(request, "getUrl");
+            if (url == null) url = getObjectField(request, "url");
+            if (url == null) url = findFieldValue(request, "url");
+            if (url instanceof String && !((String) url).isEmpty()) {
+                return (String) url;
+            }
+        }
+        if (requestContext != null) {
+            for (String fieldName : new String[]{"LIZ", "LIZJ", "url"}) {
+                Object value = findFieldValue(requestContext, fieldName);
+                if (value instanceof CharSequence) {
+                    String text = value.toString();
+                    if (!text.isEmpty()) return text;
+                }
+            }
+        }
+        return null;
+    }
+
+    private boolean applyRewrittenUrl(Object target, String newUrl) {
+        if (target == null || newUrl == null) return false;
+        boolean ok = false;
+        try {
+            Field urlField = findFieldRecursive(target.getClass(), "url");
+            if (urlField != null) {
+                urlField.setAccessible(true);
+                urlField.set(target, newUrl);
+                ok = true;
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            Object uri = null;
+            try {
+                Method safe = target.getClass().getMethod("safeCreateUri", String.class);
+                safe.setAccessible(true);
+                uri = safe.invoke(null, newUrl);
+            } catch (Throwable ignored) {
+            }
+            if (uri == null) {
+                uri = new java.net.URI(newUrl);
+            }
+            Field uriField = findFieldRecursive(target.getClass(), "uri");
+            if (uriField != null) {
+                uriField.setAccessible(true);
+                uriField.set(target, uri);
+                ok = true;
+            }
+        } catch (Throwable ignored) {
+        }
+        return ok;
+    }
+
+    private Field findFieldRecursive(Class<?> cls, String name) {
+        while (cls != null) {
+            try {
+                return cls.getDeclaredField(name);
+            } catch (NoSuchFieldException ignored) {
+                cls = cls.getSuperclass();
+            }
+        }
+        return null;
     }
 
     private Object findRequestObject(Object requestContext) {
@@ -1484,9 +1604,10 @@ public class MainHook implements IXposedHookLoadPackage {
                 "com.bytedance.retrofit2.client.Request"
         );
         if (typed != null) return typed;
-        for (String fieldName : new String[]{"LIZ", "LIZJ", "request"}) {
+        for (String fieldName : new String[]{"LIZJ", "LIZ", "request"}) {
             Object value = findFieldValue(requestContext, fieldName);
-            if (value != null && callNoArg(value, "getUrl") != null) {
+            if (value != null && (callNoArg(value, "getUrl") != null
+                    || getObjectField(value, "url") != null)) {
                 return value;
             }
         }
@@ -1494,14 +1615,19 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private Map<Object, Object> findQueryMapFromRequestContext(Object requestContext, Object request) {
-        for (String fieldName : new String[]{"LIZ", "LIZJ", "LJI", "LJFF"}) {
-            Object candidate = findFieldValue(requestContext, fieldName);
-            Map<Object, Object> map = findQueryLikeMapDeep(candidate, 2);
-            if (map != null) return map;
+        Object[] roots = new Object[]{requestContext, request};
+        String[] fieldNames = {"LIZ", "LIZJ", "LJI", "LJFF", "LJIILJJIL", "tags"};
+        for (Object root : roots) {
+            if (root == null) continue;
+            for (String fieldName : fieldNames) {
+                Object candidate = findFieldValue(root, fieldName);
+                Map<Object, Object> map = findQueryLikeMapDeep(candidate, 3);
+                if (map != null) return map;
+            }
+            Map<Object, Object> fromRoot = findQueryLikeMapDeep(root, 3);
+            if (fromRoot != null) return fromRoot;
         }
-        Map<Object, Object> fromContext = findQueryLikeMapDeep(requestContext, 2);
-        if (fromContext != null) return fromContext;
-        return findQueryLikeMapDeep(request, 2);
+        return null;
     }
 
     @SuppressWarnings("unchecked")
@@ -1509,11 +1635,11 @@ public class MainHook implements IXposedHookLoadPackage {
         if (target == null || depth < 0) return null;
         if (target instanceof Map<?, ?>) {
             Map<Object, Object> map = (Map<Object, Object>) target;
-            if (looksLikeUrlQuery(map)) return map;
+            if (FeedRegionRewriter.looksLikeFeedQuery(map)) return map;
         }
 
         Map<Object, Object> direct = findMapField(target);
-        if (direct != null && looksLikeUrlQuery(direct)) return direct;
+        if (direct != null && FeedRegionRewriter.looksLikeFeedQuery(direct)) return direct;
 
         for (Class<?> cls = target.getClass(); cls != null; cls = cls.getSuperclass()) {
             for (Field field : cls.getDeclaredFields()) {
@@ -1525,7 +1651,7 @@ public class MainHook implements IXposedHookLoadPackage {
                     if (value == null) continue;
                     if (value instanceof Map<?, ?>) {
                         Map<Object, Object> map = (Map<Object, Object>) value;
-                        if (looksLikeUrlQuery(map)) return map;
+                        if (FeedRegionRewriter.looksLikeFeedQuery(map)) return map;
                     } else if (depth > 0) {
                         Map<Object, Object> nested = findQueryLikeMapDeep(value, depth - 1);
                         if (nested != null) return nested;
@@ -1538,8 +1664,7 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private boolean isRecommendationFeedUrl(String url) {
-        return url.contains(RECOMMENDATION_FEED_PATH)
-                || url.contains(LEGACY_RECOMMENDATION_FEED_PATH);
+        return FeedRegionRewriter.containsFeedPath(url);
     }
 
     private Object findFieldValueByTypeName(Object target, String typeName) {
@@ -1575,11 +1700,7 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private boolean looksLikeUrlQuery(Map<Object, Object> candidate) {
-        if (candidate == null) return false;
-        return candidate.containsKey("aid")
-                || candidate.containsKey("device_platform")
-                || candidate.containsKey("region")
-                || candidate.containsKey("app_language");
+        return FeedRegionRewriter.looksLikeFeedQuery(candidate);
     }
 
     private void replaceQueryValue(Map<Object, Object> query, String key, String value) {
@@ -1592,7 +1713,12 @@ public class MainHook implements IXposedHookLoadPackage {
             }
         }
 
-        query.put(actualKey, new ArrayList<>(Collections.singletonList(value)));
+        Object current = query.get(actualKey);
+        if (current instanceof List) {
+            query.put(actualKey, new ArrayList<>(Collections.singletonList(value)));
+        } else {
+            query.put(actualKey, value);
+        }
     }
 
 
