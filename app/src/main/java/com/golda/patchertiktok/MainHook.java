@@ -138,9 +138,12 @@ public class MainHook implements IXposedHookLoadPackage {
                     if (intent == null) return;
                     Bundle bundle = intent.getBundleExtra(ModuleConfig.EXTRA_CONFIG);
                     if (bundle == null) return;
+                    ModuleConfig incoming = ModuleConfig.fromBundle(bundle);
+                    // Live-apply for feed filters that read the static config field.
+                    config = incoming;
                     ModuleConfig.saveRuntime(receiverContext, bundle);
-                    XposedBridge.log(TAG + ": config broadcast saved to TikTok prefs; "
-                            + "force-stop TikTok to apply " + ModuleConfig.fromBundle(bundle));
+                    XposedBridge.log(TAG + ": config broadcast applied live + saved runtime prefs: "
+                            + incoming);
                 }
             };
             IntentFilter filter = new IntentFilter(ModuleConfig.ACTION_CONFIG);

@@ -476,21 +476,38 @@ public final class ModuleConfig {
 
     static ModuleConfig loadFromPublicFiles(StringBuilder trace) {
         File[] files = publicMirrorFiles();
+        boolean sawFile = false;
         for (File file : files) {
+            boolean exists = false;
+            boolean readable = false;
             try {
-                if (!file.isFile() || file.length() <= 0) continue;
+                exists = file.isFile();
+                readable = exists && file.canRead();
+            } catch (Throwable ignored) {
+            }
+            if (trace != null) {
+                trace.append("public[").append(file.getName())
+                        .append("] exists=").append(exists)
+                        .append(" readable=").append(readable).append(';');
+            }
+            if (!readable) continue;
+            try {
+                if (file.length() <= 0) continue;
                 Properties properties = new Properties();
                 try (FileInputStream in = new FileInputStream(file)) {
                     properties.load(in);
                 }
                 if (!properties.isEmpty()) {
-                    if (trace != null) trace.append("public=").append(file.getAbsolutePath()).append(';');
+                    sawFile = true;
                     return fromProperties(properties);
                 }
-            } catch (Throwable ignored) {
+            } catch (Throwable t) {
+                if (trace != null) {
+                    trace.append("public-read-err:").append(t.getClass().getSimpleName()).append(';');
+                }
             }
         }
-        return null;
+        return sawFile ? null : null;
     }
 
     private static Properties propertiesFromPrefs(SharedPreferences prefs) {

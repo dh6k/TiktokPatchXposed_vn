@@ -43,9 +43,23 @@ public final class SettingsActivity extends Activity {
         statusView = note(buildStatus());
         root.addView(statusView);
         root.addView(note(
-                "This screen is the settings app, not an overlay inside TikTok.\n"
-                        + "After toggles change: force-stop TikTok, then reopen it.\n"
-                        + "Hook reads config via XSharedPreferences / provider / package-context."));
+                "THIS IS THE SETTINGS APP (not an overlay in TikTok).\n"
+                        + "Required order:\n"
+                        + "1) Open TikTok once — log must show \"config broadcast receiver registered\".\n"
+                        + "2) Leave TikTok running (background is OK).\n"
+                        + "3) Open this app, change toggles (status: broadcast=sent).\n"
+                        + "4) Force-stop TikTok, reopen it.\n"
+                        + "5) Log should show config source=runtime-prefs (or live broadcast apply)."));
+        Button resend = new Button(this);
+        resend.setText("Resend config broadcast now");
+        resend.setOnClickListener(v -> {
+            prefs.edit().commit();
+            boolean ok = ModuleConfig.broadcastConfig(this, prefs);
+            Toast.makeText(this, ok ? "Broadcast sent to TikTok packages" : "Broadcast failed",
+                    Toast.LENGTH_SHORT).show();
+            persist();
+        });
+        root.addView(resend);
 
         root.addView(section("Vietnam profile"));
         bindSwitch(root, ModuleConfig.KEY_VIETNAM_REGION, "Vietnam SIM/region spoof");
